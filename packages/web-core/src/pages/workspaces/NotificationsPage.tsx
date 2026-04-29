@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from '@tanstack/react-router';
 import { BellIcon, CheckIcon, ChecksIcon } from '@phosphor-icons/react';
 import { UserAvatar } from '@vibe/ui/components/UserAvatar';
@@ -10,7 +10,81 @@ import {
   type MessageSegment,
 } from '@/shared/lib/notificationMessage';
 import { formatRelativeTime } from '@/shared/lib/date';
+import { isTauriApp } from '@/shared/lib/platform';
+import {
+  getBrowserNotificationPermission,
+  isBrowserNotificationsSupported,
+  requestBrowserNotificationPermission,
+  type BrowserNotificationPermission,
+} from '@/shared/lib/browserNotifications';
 import { cn } from '@/shared/lib/utils';
+
+function BrowserNotificationBanner() {
+  const [permission, setPermission] = useState<BrowserNotificationPermission>(
+    () => getBrowserNotificationPermission()
+  );
+  const [requesting, setRequesting] = useState(false);
+
+  useEffect(() => {
+    setPermission(getBrowserNotificationPermission());
+  }, []);
+
+  // Tauri uses native OS notifications via the desktop wrapper — no
+  // browser permission needed there.
+  if (isTauriApp()) {
+    return null;
+  }
+  if (!isBrowserNotificationsSupported()) {
+    return null;
+  }
+  if (permission === 'granted' || permission === 'unsupported') {
+    return null;
+  }
+
+  const handleEnable = async () => {
+    setRequesting(true);
+    try {
+      const result = await requestBrowserNotificationPermission();
+      setPermission(result);
+    } finally {
+      setRequesting(false);
+    }
+  };
+
+  if (permission === 'denied') {
+    return (
+      <div className="px-double py-base border-b border-border bg-secondary/50 text-sm text-low">
+        Desktop notifications are blocked. Enable them in your browser's site
+        settings to get OS-level alerts when this tab is not in focus.
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center justify-between gap-base px-double py-base border-b border-border bg-secondary/50">
+      <div className="flex flex-col">
+        <p className="text-sm text-high">Enable desktop notifications</p>
+        <p className="text-xs text-low">
+          Get OS-level alerts when this tab is in the background. Only fires
+          while the browser is open.
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={handleEnable}
+        disabled={requesting}
+        className={cn(
+          'shrink-0 inline-flex items-center rounded-sm px-base py-half text-sm transition-colors cursor-pointer',
+          'border border-border text-high hover:bg-secondary',
+          'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-brand',
+          'disabled:opacity-60 disabled:cursor-not-allowed'
+        )}
+      >
+        {requesting ? 'Requesting…' : 'Enable'}
+      </button>
+    </div>
+  );
+}
 
 function NotificationMessage({
   segments,
@@ -118,6 +192,8 @@ export function NotificationsPage() {
           </button>
         )}
       </div>
+
+      <BrowserNotificationBanner />
 
       <div className="flex-1 overflow-y-auto">
         {groupedNotifications.length === 0 ? (
