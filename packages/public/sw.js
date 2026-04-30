@@ -9,7 +9,7 @@
  *   { title, body, tag, deeplink_path? }
  */
 
-const SW_VERSION = "1.0.0";
+const SW_VERSION = "1.0.1";
 const PUSH_SUBSCRIBE_PATH = "/v1/push/subscribe";
 
 self.addEventListener("install", (event) => {
@@ -20,6 +20,33 @@ self.addEventListener("install", (event) => {
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(self.clients.claim());
+});
+
+/**
+ * Fetch handler.
+ *
+ * Two reasons for having this even though we're not doing offline:
+ *
+ * 1. Chrome's PWA install criteria require a SW with a `fetch` event
+ *    handler before showing the "Install app" affordance. Without this,
+ *    Android Chrome / Samsung Internet / older Chromiums won't prompt.
+ *
+ * 2. Network-first navigation requests prevent stale HTML from being
+ *    served on mobile browsers (and especially when the SW caches an
+ *    older HTML pointing to an old bundle hash). Fresh HTML = fresh
+ *    everything because Vite's content-hashed assets are referenced
+ *    inline.
+ *
+ * Non-navigation requests pass through the network unchanged.
+ */
+self.addEventListener("fetch", (event) => {
+  if (event.request.mode === "navigate") {
+    event.respondWith(
+      fetch(event.request, { cache: "no-cache" }).catch(() =>
+        fetch(event.request),
+      ),
+    );
+  }
 });
 
 /**
