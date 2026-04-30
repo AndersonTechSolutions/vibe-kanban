@@ -17,6 +17,7 @@ import {
   requestBrowserNotificationPermission,
   type BrowserNotificationPermission,
 } from '@/shared/lib/browserNotifications';
+import { usePushNotifications } from '@/shared/hooks/usePushNotifications';
 import { cn } from '@/shared/lib/utils';
 
 function BrowserNotificationBanner() {
@@ -24,6 +25,7 @@ function BrowserNotificationBanner() {
     () => getBrowserNotificationPermission()
   );
   const [requesting, setRequesting] = useState(false);
+  const push = usePushNotifications();
 
   useEffect(() => {
     setPermission(getBrowserNotificationPermission());
@@ -37,15 +39,34 @@ function BrowserNotificationBanner() {
   if (!isBrowserNotificationsSupported()) {
     return null;
   }
-  if (permission === 'granted' || permission === 'unsupported') {
+
+  // If push (Tier 2) is supported on this deployment AND the user has
+  // already granted permission, show a secondary CTA to also enable the
+  // background-alerts subscription. Hidden once both are wired up.
+  const showPushUpgrade =
+    permission === 'granted' && push.isSupported && !push.isSubscribed;
+
+  if (
+    (permission === 'granted' || permission === 'unsupported') &&
+    !showPushUpgrade
+  ) {
     return null;
   }
 
   const handleEnable = async () => {
     setRequesting(true);
     try {
-      const result = await requestBrowserNotificationPermission();
-      setPermission(result);
+      let nextPermission: BrowserNotificationPermission = permission;
+      if (permission !== 'granted') {
+        nextPermission = await requestBrowserNotificationPermission();
+        setPermission(nextPermission);
+      }
+      // If push is supported on this deployment, also subscribe so OS
+      // toasts fire even when the tab is closed (Tier 2). subscribe()
+      // is a no-op if push is unsupported or already subscribed.
+      if (nextPermission === 'granted' && push.isSupported) {
+        await push.subscribe();
+      }
     } finally {
       setRequesting(false);
     }
@@ -54,25 +75,36 @@ function BrowserNotificationBanner() {
   if (permission === 'denied') {
     return (
       <div className="px-double py-base border-b border-border bg-secondary/50 text-sm text-low">
-        Desktop notifications are blocked. Enable them in your browser's site
-        settings to get OS-level alerts when this tab is not in focus.
+        Desktop notifications are blocked. Enable them in your browser's
+        site settings to get OS-level alerts when this tab is not in
+        focus.
       </div>
     );
   }
 
+  const titleCopy = showPushUpgrade
+    ? 'Enable background alerts'
+    : 'Enable desktop notifications';
+  const subtitleCopy = showPushUpgrade
+    ? 'Get OS-level alerts even when this tab is closed.'
+    : push.isSupported
+      ? 'Get OS-level alerts even when this tab is closed.'
+      : 'Get OS-level alerts when this tab is in the background. Only fires while the browser is open.';
+  const buttonLabel = requesting || push.isLoading ? 'Enabling…' : 'Enable';
+
   return (
     <div className="flex items-center justify-between gap-base px-double py-base border-b border-border bg-secondary/50">
       <div className="flex flex-col">
-        <p className="text-sm text-high">Enable desktop notifications</p>
-        <p className="text-xs text-low">
-          Get OS-level alerts when this tab is in the background. Only fires
-          while the browser is open.
-        </p>
+        <p className="text-sm text-high">{titleCopy}</p>
+        <p className="text-xs text-low">{subtitleCopy}</p>
+        {push.error && (
+          <p className="text-xs text-destructive mt-half">{push.error}</p>
+        )}
       </div>
       <button
         type="button"
         onClick={handleEnable}
-        disabled={requesting}
+        disabled={requesting || push.isLoading}
         className={cn(
           'shrink-0 inline-flex items-center rounded-sm px-base py-half text-sm transition-colors cursor-pointer',
           'border border-border text-high hover:bg-secondary',
@@ -80,7 +112,7 @@ function BrowserNotificationBanner() {
           'disabled:opacity-60 disabled:cursor-not-allowed'
         )}
       >
-        {requesting ? 'Requesting…' : 'Enable'}
+        {buttonLabel}
       </button>
     </div>
   );
