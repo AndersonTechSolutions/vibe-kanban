@@ -15,6 +15,7 @@ import {
   HouseIcon,
   KanbanIcon,
   BellIcon,
+  ListIcon,
 } from "@phosphor-icons/react";
 import { MobileDrawer } from "@vibe/ui/components/MobileDrawer";
 import type { Project } from "shared/remote-types";
@@ -518,6 +519,29 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
               onOpenDrawer={() => setIsDrawerOpen(true)}
               mobileUserSlot={mobileUserSlot}
             />
+          )}
+          {/* Global mobile header for routes that don't get
+              RemoteNavbarContainer (home, /notifications, /account, etc).
+              Without this, mobile users land on the home page with no
+              navigation chrome at all — no hamburger to open the drawer
+              and no notification bell. */}
+          {isMobile && !isWorkspaceContextRoute && !isProjectRoute && (
+            <header className="flex h-12 items-center justify-between gap-2 border-b border-border bg-primary px-3">
+              <button
+                type="button"
+                onClick={() => setIsDrawerOpen(true)}
+                className="flex h-9 w-9 items-center justify-center rounded-md text-normal hover:bg-secondary cursor-pointer"
+                aria-label="Open menu"
+              >
+                <ListIcon className="h-5 w-5" weight="bold" />
+              </button>
+              <span className="truncate text-sm font-medium text-high">
+                {selectedOrgName ?? "Vibe Kanban"}
+              </span>
+              <div className="flex items-center gap-1">
+                {isSignedIn && <AppBarNotificationBellContainer />}
+              </div>
+            </header>
           )}
           {!isMobile && (isWorkspaceContextRoute || isProjectRoute) && (
             <RemoteDesktopNavbar />

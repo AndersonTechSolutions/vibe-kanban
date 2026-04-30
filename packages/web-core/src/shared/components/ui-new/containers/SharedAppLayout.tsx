@@ -8,6 +8,7 @@ import {
   LayoutIcon,
   KanbanIcon,
   DownloadSimpleIcon,
+  BellIcon,
 } from '@phosphor-icons/react';
 import { SyncErrorProvider } from '@/shared/providers/SyncErrorProvider';
 import { useIsMobile } from '@/shared/hooks/useIsMobile';
@@ -20,6 +21,7 @@ import { AppBar, type AppBarHostStatus } from '@vibe/ui/components/AppBar';
 import { MobileDrawer } from '@vibe/ui/components/MobileDrawer';
 import { AppBarUserPopoverContainer } from './AppBarUserPopoverContainer';
 import { useUserOrganizations } from '@/shared/hooks/useUserOrganizations';
+import { useNotifications } from '@/shared/hooks/useNotifications';
 import { useOrganizationStore } from '@/shared/stores/useOrganizationStore';
 import { useAuth } from '@/shared/hooks/auth/useAuth';
 import { useDiscordOnlineCount } from '@/shared/hooks/useDiscordOnlineCount';
@@ -65,6 +67,10 @@ export function SharedAppLayout() {
     (s) => s.isLeftSidebarVisible
   );
   const { isSignedIn } = useAuth();
+  const {
+    unseenCount: notificationUnseenCount,
+    enabled: notificationsEnabled,
+  } = useNotifications();
   const { appVersion } = useUserSystem();
   const updateVersion = useAppUpdateStore((s) => s.updateVersion);
   const restartForUpdate = useAppUpdateStore((s) => s.restart);
@@ -452,6 +458,27 @@ export function SharedAppLayout() {
               <LayoutIcon className="h-4 w-4" />
               Workspaces
             </button>
+
+            {isSignedIn && notificationsEnabled && (
+              <button
+                type="button"
+                onClick={() => {
+                  void navigate({ to: '/notifications' });
+                  setIsDrawerOpen(false);
+                }}
+                className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"
+              >
+                <BellIcon className="h-4 w-4" weight="bold" />
+                <span className="flex-1 text-left">Notifications</span>
+                {notificationUnseenCount > 0 && (
+                  <span className="min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-brand-secondary text-[10px] font-medium text-white">
+                    {notificationUnseenCount > 99
+                      ? '99+'
+                      : notificationUnseenCount}
+                  </span>
+                )}
+              </button>
+            )}
 
             {/* Divider */}
             <div className="border-t border-border mx-4" />
