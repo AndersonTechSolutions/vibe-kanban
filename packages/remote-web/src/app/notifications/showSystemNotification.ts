@@ -18,6 +18,13 @@ interface NotificationPayload {
  * desktop-shell path to consider. For "alert me when the browser is
  * closed" semantics, a Service Worker + Web Push subscription is
  * required (see vibe-kanban-deploy/docs/web-push-design.md).
+ *
+ * No visibility / focus gating: `document.visibilityState` and
+ * `document.hasFocus()` both behave unreliably across browsers
+ * (Arc in particular) — they can stay "visible"/`true` even when the
+ * user has focused a different OS app. Always firing is mildly noisier
+ * (duplicate alert when the user is on the page) but never silently
+ * drops a real notification.
  */
 export async function showSystemNotification(
   notification: NotificationPayload,
@@ -26,15 +33,6 @@ export async function showSystemNotification(
     return;
   }
   if (getBrowserNotificationPermission() !== "granted") {
-    return;
-  }
-
-  // Skip when the tab is in the foreground — the in-app /notifications
-  // list surfaces the same item without OS-toast noise.
-  if (
-    typeof document !== "undefined" &&
-    document.visibilityState === "visible"
-  ) {
     return;
   }
 

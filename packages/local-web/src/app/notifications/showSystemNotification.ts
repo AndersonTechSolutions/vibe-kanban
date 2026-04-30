@@ -35,20 +35,17 @@ export async function showSystemNotification(
   // Browser fallback — uses the Web Notification API. This only works
   // while the tab is alive; for "alert me when the browser is closed",
   // a Service Worker + Web Push subscription is required (separate work).
+  //
+  // No visibility / focus gating: `document.visibilityState` and
+  // `document.hasFocus()` both behave unreliably across browsers
+  // (Arc in particular) — they can stay "visible"/`true` even when the
+  // user has focused a different OS app. Always firing is mildly noisier
+  // (duplicate alert when the user is on the page) but never silently
+  // drops a real notification.
   if (!isBrowserNotificationsSupported()) {
     return;
   }
   if (getBrowserNotificationPermission() !== 'granted') {
-    return;
-  }
-
-  // If the tab is currently in the foreground, skip the OS notification —
-  // the in-app `/notifications` list surfaces the same item without the
-  // OS-level toast noise.
-  if (
-    typeof document !== 'undefined' &&
-    document.visibilityState === 'visible'
-  ) {
     return;
   }
 
