@@ -18,6 +18,7 @@ use crate::{
     db, digest,
     github_app::GitHubAppService,
     mail::{LoopsMailer, Mailer, NoopMailer},
+    push::PushService,
     r2::R2Service,
     routes,
 };
@@ -185,6 +186,20 @@ impl Server {
             spawn_cleanup_task(pool.clone(), azure_blob_service.clone());
         }
 
+        let push = match PushService::from_env(pool.clone()) {
+            Ok(service) => {
+                tracing::info!("Web Push service initialized");
+                Some(Arc::new(service))
+            }
+            Err(error) => {
+                tracing::info!(
+                    %error,
+                    "Web Push service not initialized (set VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT to enable)"
+                );
+                None
+            }
+        };
+
         let digest_enabled = std::env::var("DIGEST_ENABLED")
             .map(|v| matches!(v.as_str(), "true" | "1"))
             .unwrap_or(false);
@@ -215,6 +230,7 @@ impl Server {
             github_app,
             billing,
             analytics,
+            push,
         );
 
         let router = routes::router(state);

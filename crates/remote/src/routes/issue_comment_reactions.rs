@@ -82,6 +82,7 @@ async fn notify_comment_author_about_reaction(
         },
         Some(comment.id),
         Some(issue.id),
+        state.push(),
     )
     .await;
 }

@@ -147,6 +147,7 @@ async fn create_issue_comment(
                 ..Default::default()
             },
             Some(response.data.id),
+            state.push(),
         )
         .await;
     }

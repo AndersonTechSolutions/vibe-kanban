@@ -107,7 +107,8 @@ pub fn router(state: AppState) -> Router {
         .merge(tokens::public_router())
         .merge(review::public_router())
         .merge(github_app::public_router())
-        .merge(billing::public_router());
+        .merge(billing::public_router())
+        .merge(crate::push::routes::public_router());
 
     let v1_protected = Router::<AppState>::new()
         .merge(identity::router())
@@ -134,6 +135,7 @@ pub fn router(state: AppState) -> Router {
         .merge(workspaces::router())
         .merge(billing::protected_router())
         .merge(export::router())
+        .merge(crate::push::routes::protected_router())
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_session,

@@ -10,6 +10,7 @@ use crate::{
     config::RemoteServerConfig,
     github_app::GitHubAppService,
     mail::Mailer,
+    push::PushService,
     r2::R2Service,
 };
 
@@ -28,6 +29,7 @@ pub struct AppState {
     github_app: Option<Arc<GitHubAppService>>,
     billing: BillingService,
     analytics: Option<AnalyticsService>,
+    push: Option<Arc<PushService>>,
 }
 
 impl AppState {
@@ -46,6 +48,7 @@ impl AppState {
         github_app: Option<Arc<GitHubAppService>>,
         billing: BillingService,
         analytics: Option<AnalyticsService>,
+        push: Option<Arc<PushService>>,
     ) -> Self {
         Self {
             pool,
@@ -61,6 +64,7 @@ impl AppState {
             github_app,
             billing,
             analytics,
+            push,
         }
     }
 
@@ -106,5 +110,9 @@ impl AppState {
 
     pub fn analytics(&self) -> Option<&AnalyticsService> {
         self.analytics.as_ref()
+    }
+
+    pub fn push(&self) -> Option<Arc<PushService>> {
+        self.push.as_ref().map(Arc::clone)
     }
 }

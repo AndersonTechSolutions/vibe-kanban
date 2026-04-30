@@ -1,12 +1,15 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
-use api_types::{Issue, NotificationPayload, NotificationType};
+use api_types::{Issue, Notification, NotificationPayload, NotificationType};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::db::{
-    issue_assignees::IssueAssigneeRepository, issue_followers::IssueFollowerRepository,
-    notifications::NotificationRepository, organization_members::is_member,
+use crate::{
+    db::{
+        issue_assignees::IssueAssigneeRepository, issue_followers::IssueFollowerRepository,
+        notifications::NotificationRepository, organization_members::is_member,
+    },
+    push::{PushPayload, PushService},
 };
 
 pub async fn notify_issue_subscribers(
@@ -17,6 +20,7 @@ pub async fn notify_issue_subscribers(
     notification_type: NotificationType,
     extra_payload: NotificationPayload,
     comment_id: Option<Uuid>,
+    push: Option<Arc<PushService>>,
 ) {
     let recipients = match collect_issue_recipients(pool, organization_id, issue.id, actor_user_id)
         .await
@@ -38,6 +42,7 @@ pub async fn notify_issue_subscribers(
         extra_payload,
         comment_id,
         Some(issue.id),
+        push,
     )
     .await;
 }
@@ -56,6 +61,7 @@ pub async fn send_issue_notifications(
     extra_payload: NotificationPayload,
     comment_id: Option<Uuid>,
     issue_id: Option<Uuid>,
+    push: Option<Arc<PushService>>,
 ) {
     if recipients.is_empty() {
         return;
@@ -64,7 +70,7 @@ pub async fn send_issue_notifications(
     let payload = build_payload(issue, actor_user_id, notification_type, extra_payload);
 
     for &recipient_id in recipients {
-        if let Err(e) = NotificationRepository::create(
+        match NotificationRepository::create(
             pool,
             organization_id,
             recipient_id,
@@ -75,7 +81,10 @@ pub async fn send_issue_notifications(
         )
         .await
         {
-            tracing::warn!(?e, %recipient_id, issue_id = %issue.id, "failed to create notification");
+            Ok(notification) => spawn_push(push.as_ref(), &notification),
+            Err(e) => {
+                tracing::warn!(?e, %recipient_id, issue_id = %issue.id, "failed to create notification");
+            }
         }
     }
 }
@@ -91,6 +100,7 @@ pub async fn send_debounced_issue_notifications(
     extra_payload: NotificationPayload,
     comment_id: Option<Uuid>,
     issue_id: Option<Uuid>,
+    push: Option<Arc<PushService>>,
 ) {
     if recipients.is_empty() {
         return;
@@ -99,7 +109,7 @@ pub async fn send_debounced_issue_notifications(
     let payload = build_payload(issue, actor_user_id, notification_type, extra_payload);
 
     for &recipient_id in recipients {
-        if let Err(e) = NotificationRepository::upsert_recent(
+        match NotificationRepository::upsert_recent(
             pool,
             organization_id,
             recipient_id,
@@ -110,7 +120,10 @@ pub async fn send_debounced_issue_notifications(
         )
         .await
         {
-            tracing::warn!(?e, %recipient_id, issue_id = %issue.id, "failed to upsert notification");
+            Ok(notification) => spawn_push(push.as_ref(), &notification),
+            Err(e) => {
+                tracing::warn!(?e, %recipient_id, issue_id = %issue.id, "failed to upsert notification");
+            }
         }
     }
 }
@@ -123,6 +136,7 @@ pub async fn notify_user(
     issue: &Issue,
     notification_type: NotificationType,
     extra_payload: NotificationPayload,
+    push: Option<Arc<PushService>>,
 ) {
     if !is_member(pool, organization_id, recipient_user_id)
         .await
@@ -141,6 +155,7 @@ pub async fn notify_user(
         extra_payload,
         None,
         Some(issue.id),
+        push,
     )
     .await;
 }
@@ -199,4 +214,27 @@ fn build_payload(
         assignee_user_id: extra_payload.assignee_user_id,
         emoji: extra_payload.emoji,
     }
+}
+
+fn build_push_payload(notification: &Notification) -> PushPayload {
+    PushPayload {
+        title: "Vibe Kanban".to_string(),
+        body: "You have a new Vibe Kanban notification".to_string(),
+        tag: notification.id.to_string(),
+        deeplink_path: notification
+            .payload
+            .deeplink_path
+            .clone()
+            .or_else(|| Some("/notifications".to_string())),
+    }
+}
+
+fn spawn_push(push: Option<&Arc<PushService>>, notification: &Notification) {
+    let Some(push) = push else { return };
+    let push = Arc::clone(push);
+    let user_id = notification.user_id;
+    let payload = build_push_payload(notification);
+    tokio::spawn(async move {
+        push.send_to_user(user_id, payload).await;
+    });
 }

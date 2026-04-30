@@ -124,6 +124,7 @@ async fn create_issue_assignee(
                 assignee_user_id: Some(payload.user_id),
                 ..Default::default()
             },
+            state.push(),
         )
         .await;
     }
@@ -175,6 +176,7 @@ async fn delete_issue_assignee(
                 assignee_user_id: Some(assignee.user_id),
                 ..Default::default()
             },
+            state.push(),
         )
         .await;
     }

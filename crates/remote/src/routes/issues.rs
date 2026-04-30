@@ -115,6 +115,7 @@ async fn notify_issue_update_changes(
             },
             None,
             Some(new_issue.id),
+            state.push(),
         )
         .await;
     }
@@ -133,6 +134,7 @@ async fn notify_issue_update_changes(
             },
             None,
             Some(new_issue.id),
+            state.push(),
         )
         .await;
     }
@@ -148,6 +150,7 @@ async fn notify_issue_update_changes(
             NotificationPayload::default(),
             None,
             Some(new_issue.id),
+            state.push(),
         )
         .await;
     }
@@ -167,6 +170,7 @@ async fn notify_issue_update_changes(
             },
             None,
             Some(new_issue.id),
+            state.push(),
         )
         .await;
     }
@@ -455,6 +459,7 @@ async fn delete_issue(
         NotificationPayload::default(),
         None,
         None,
+        state.push(),
     )
     .await;
 
