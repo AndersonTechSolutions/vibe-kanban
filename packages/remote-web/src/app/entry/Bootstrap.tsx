@@ -47,6 +47,26 @@ configureAuthRuntime({
   },
 });
 
+// Register the service worker on app boot, not lazily inside the
+// notifications hook. Chrome's PWA install criteria require an active
+// SW with a fetch handler before the "Install app" affordance appears,
+// so deferring registration to /notifications meant most users never
+// saw the install card on the home page. Fire-and-forget — failures
+// (e.g. local-web with no /sw.js, or unsupported browsers) are
+// non-fatal.
+if (
+  typeof window !== "undefined" &&
+  "serviceWorker" in navigator
+) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker
+      .register(`${import.meta.env.BASE_URL ?? "/"}sw.js`)
+      .catch((err) => {
+        console.warn("[Bootstrap] service worker registration failed", err);
+      });
+  });
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
