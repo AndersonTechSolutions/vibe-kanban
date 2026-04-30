@@ -9,7 +9,13 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { siDiscord, siGithub } from "simple-icons";
 import { AppBar, type AppBarHostStatus } from "@vibe/ui/components/AppBar";
-import { XIcon, PlusIcon, HouseIcon, KanbanIcon } from "@phosphor-icons/react";
+import {
+  XIcon,
+  PlusIcon,
+  HouseIcon,
+  KanbanIcon,
+  BellIcon,
+} from "@phosphor-icons/react";
 import { MobileDrawer } from "@vibe/ui/components/MobileDrawer";
 import type { Project } from "shared/remote-types";
 import { useIsMobile } from "@/shared/hooks/useIsMobile";
@@ -19,6 +25,7 @@ import { useAuth } from "@/shared/hooks/auth/useAuth";
 import { useOrganizationStore } from "@/shared/stores/useOrganizationStore";
 import { useDiscordOnlineCount } from "@/shared/hooks/useDiscordOnlineCount";
 import { useGitHubStars } from "@/shared/hooks/useGitHubStars";
+import { useNotifications } from "@/shared/hooks/useNotifications";
 import { AppBarNotificationBellContainer } from "@/pages/workspaces/AppBarNotificationBellContainer";
 import { SettingsDialog } from "@/shared/dialogs/settings/SettingsDialog";
 import { CommandBarDialog } from "@/shared/dialogs/command-bar/CommandBarDialog";
@@ -68,6 +75,10 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
   );
   const isMobile = useIsMobile();
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const {
+    unseenCount: notificationUnseenCount,
+    enabled: notificationsEnabled,
+  } = useNotifications();
 
   const { data: organizationsData } = useUserOrganizations();
   const organizations = organizationsData?.organizations ?? [];
@@ -323,6 +334,27 @@ export function RemoteAppShell({ children }: RemoteAppShellProps) {
               <HouseIcon className="h-4 w-4" />
               Home
             </button>
+
+            {isSignedIn && notificationsEnabled && (
+              <button
+                type="button"
+                onClick={() => {
+                  navigate({ to: "/notifications" });
+                  setIsDrawerOpen(false);
+                }}
+                className="flex items-center gap-2 px-4 py-3 text-sm text-normal hover:bg-secondary cursor-pointer"
+              >
+                <BellIcon className="h-4 w-4" weight="bold" />
+                <span className="flex-1 text-left">Notifications</span>
+                {notificationUnseenCount > 0 && (
+                  <span className="min-w-[18px] h-[18px] px-1 flex items-center justify-center rounded-full bg-brand-secondary text-[10px] font-medium text-white">
+                    {notificationUnseenCount > 99
+                      ? "99+"
+                      : notificationUnseenCount}
+                  </span>
+                )}
+              </button>
+            )}
 
             {/* Divider */}
             <div className="mx-3 border-t border-border" />
