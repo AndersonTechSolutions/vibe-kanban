@@ -552,6 +552,31 @@ export const ConversationList = forwardRef<
   // Determine if there are entries to show placeholders
   const hasEntries = conversationRows.length > 0;
 
+  // Belt-and-suspenders forced scroll-to-bottom when entering a workspace.
+  // The pendingIntent → useLayoutEffect machinery in useConversationVirtualizer
+  // returns 'initial-bottom' on the first entries-arrival, but the timing
+  // window can miss when entries stream in chunks: the effect fires before
+  // totalSize stabilizes, lands part-way up the list, and the user is left
+  // partway down with the "scroll to bottom" arrow showing. We track scope
+  // changes here and fire one extra `scrollToBottom('auto')` on the first
+  // tick after entries become non-empty for a new scopeKey.
+  const initialScrollScopeRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!hasEntries) return;
+    if (initialScrollScopeRef.current === conversationScopeKey) return;
+    initialScrollScopeRef.current = conversationScopeKey;
+    const t1 = window.setTimeout(() => {
+      scrollToBottomAndClearSpacer('auto');
+      // Second pass after another frame in case row measurements grew.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          scrollToBottomAndClearSpacer('auto');
+        });
+      });
+    }, 50);
+    return () => window.clearTimeout(t1);
+  }, [conversationScopeKey, hasEntries, scrollToBottomAndClearSpacer]);
+
   // Show placeholders only if script not configured AND not already run AND first turn
   const showSetupPlaceholder =
     !hasSetupScript && !hasSetupScriptRun && hasEntries;

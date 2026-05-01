@@ -510,7 +510,12 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
       cancelDebouncedSave();
       setLocalMessage('');
       clearUploadedAttachments();
-      if (isNewSessionMode) await clearDraft();
+      // Always clear the persisted draft after a successful send. The prior
+      // gate `if (isNewSessionMode)` left the just-sent message in
+      // localStorage for existing sessions, so it would re-populate the
+      // input the next time the user navigated back to that workspace
+      // ("previous text I sent" persistence bug).
+      await clearDraft();
       if (!isSlashCommand) {
         reviewContext?.clearComments();
       }
@@ -528,7 +533,6 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     cancelDebouncedSave,
     setLocalMessage,
     clearUploadedAttachments,
-    isNewSessionMode,
     clearDraft,
     reviewContext,
   ]);

@@ -84,12 +84,16 @@ export function useSessionMessageEditor({
   // Track whether initial load has happened to avoid re-syncing during typing
   const hasLoadedRef = useRef(false);
 
-  // Reset load state and clear message when scratchId changes (e.g., switching to approval mode)
+  // Reset load state and clear message when scratchId changes (e.g.,
+  // switching workspaces, switching to approval mode). Cancel any pending
+  // debounced save first so a stale typed-but-not-yet-saved message from
+  // the previous scratchId doesn't end up written under the new key.
   useEffect(() => {
+    cancelDebouncedSave();
     hasLoadedRef.current = false;
     setHasInitialValue(false);
     setLocalMessage('');
-  }, [scratchId]);
+  }, [scratchId, cancelDebouncedSave]);
 
   // Sync local message from scratch only on initial load
   useEffect(() => {
