@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT id AS \"id!: Uuid\",\n                      workspace_id AS \"workspace_id!: Uuid\",\n                      name,\n                      executor,\n                      agent_working_dir,\n                      created_at AS \"created_at!: DateTime<Utc>\",\n                      updated_at AS \"updated_at!: DateTime<Utc>\"\n               FROM sessions\n               WHERE id = $1",
+  "query": "SELECT id AS \"id!: Uuid\",\n                      workspace_id AS \"workspace_id!: Uuid\",\n                      name,\n                      executor,\n                      agent_working_dir,\n                      created_at AS \"created_at!: DateTime<Utc>\",\n                      updated_at AS \"updated_at!: DateTime<Utc>\",\n                      cleared_at AS \"cleared_at?: DateTime<Utc>\"\n               FROM sessions\n               WHERE id = $1",
   "describe": {
     "columns": [
       {
@@ -37,6 +37,11 @@
         "name": "updated_at!: DateTime<Utc>",
         "ordinal": 6,
         "type_info": "Text"
+      },
+      {
+        "name": "cleared_at?: DateTime<Utc>",
+        "ordinal": 7,
+        "type_info": "Datetime"
       }
     ],
     "parameters": {
@@ -49,8 +54,9 @@
       true,
       true,
       false,
-      false
+      false,
+      true
     ]
   },
-  "hash": "db39f7ab7391c1289299e7f8aa7e1f642874eed0179e91a9558f9df534db797c"
+  "hash": "5c5492b7b40517eed90a1661883f83c52326cb2c5b10403f5e482d3dab73c627"
 }

@@ -28,6 +28,12 @@ pub struct Session {
     pub agent_working_dir: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// Timestamp at which the user last cleared the executor context for this
+    /// session. Resume-lookup queries use this to ensure the next user message
+    /// spawns a cold executor session instead of resuming the pre-clear thread.
+    /// Prior turns remain visible in the timeline; the frontend draws a
+    /// "context cleared" divider at this boundary.
+    pub cleared_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Deserialize, TS)]
@@ -46,7 +52,8 @@ impl Session {
                       executor,
                       agent_working_dir,
                       created_at AS "created_at!: DateTime<Utc>",
-                      updated_at AS "updated_at!: DateTime<Utc>"
+                      updated_at AS "updated_at!: DateTime<Utc>",
+                      cleared_at AS "cleared_at?: DateTime<Utc>"
                FROM sessions
                WHERE id = $1"#,
             id
@@ -70,7 +77,8 @@ impl Session {
                       s.executor,
                       s.agent_working_dir,
                       s.created_at AS "created_at!: DateTime<Utc>",
-                      s.updated_at AS "updated_at!: DateTime<Utc>"
+                      s.updated_at AS "updated_at!: DateTime<Utc>",
+                      s.cleared_at AS "cleared_at?: DateTime<Utc>"
                FROM sessions s
                LEFT JOIN (
                    SELECT ep.session_id, MAX(ep.created_at) as last_used
@@ -101,7 +109,8 @@ impl Session {
                       s.executor,
                       s.agent_working_dir,
                       s.created_at AS "created_at!: DateTime<Utc>",
-                      s.updated_at AS "updated_at!: DateTime<Utc>"
+                      s.updated_at AS "updated_at!: DateTime<Utc>",
+                      s.cleared_at AS "cleared_at?: DateTime<Utc>"
                FROM sessions s
                LEFT JOIN (
                    SELECT ep.session_id, MAX(ep.created_at) as last_used
@@ -131,7 +140,8 @@ impl Session {
                       executor,
                       agent_working_dir,
                       created_at,
-                      updated_at
+                      updated_at,
+                      cleared_at
                FROM sessions
                WHERE workspace_id = ?
                ORDER BY created_at ASC, id ASC
@@ -161,7 +171,8 @@ impl Session {
                          executor,
                          agent_working_dir,
                          created_at AS "created_at!: DateTime<Utc>",
-                         updated_at AS "updated_at!: DateTime<Utc>""#,
+                         updated_at AS "updated_at!: DateTime<Utc>",
+                         cleared_at AS "cleared_at?: DateTime<Utc>""#,
             id,
             workspace_id,
             name,
@@ -220,6 +231,23 @@ impl Session {
         sqlx::query!(
             r#"UPDATE sessions SET executor = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2"#,
             executor,
+            id
+        )
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Stamp `cleared_at = now` on the session. Resume-lookup queries skip
+    /// turns at or before this timestamp so the next user message spawns a
+    /// cold executor session. Prior turns remain in the timeline.
+    pub async fn clear_context(pool: &SqlitePool, id: Uuid) -> Result<(), sqlx::Error> {
+        let now = Utc::now();
+        sqlx::query!(
+            r#"UPDATE sessions
+               SET cleared_at = $1, updated_at = $1
+               WHERE id = $2"#,
+            now,
             id
         )
         .execute(pool)

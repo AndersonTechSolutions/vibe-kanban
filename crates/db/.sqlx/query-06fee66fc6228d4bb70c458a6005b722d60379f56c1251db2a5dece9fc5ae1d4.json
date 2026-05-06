@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n                cat.agent_session_id as \"session_id!\",\n                cat.agent_message_id as \"message_id\"\n               FROM execution_processes ep\n               JOIN coding_agent_turns cat ON ep.id = cat.execution_process_id\n               JOIN sessions s ON ep.session_id = s.id\n               WHERE ep.session_id = $1\n                 AND ep.run_reason = 'codingagent'\n                 AND ep.dropped = FALSE\n                 AND cat.agent_session_id IS NOT NULL\n                 AND (s.cleared_at IS NULL OR ep.created_at > s.cleared_at)\n               ORDER BY ep.created_at DESC\n               LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "session_id!",
+        "ordinal": 0,
+        "type_info": "Text"
+      },
+      {
+        "name": "message_id",
+        "ordinal": 1,
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "06fee66fc6228d4bb70c458a6005b722d60379f56c1251db2a5dece9fc5ae1d4"
+}

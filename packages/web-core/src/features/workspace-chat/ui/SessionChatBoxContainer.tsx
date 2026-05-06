@@ -29,6 +29,8 @@ import { useSessionQueueInteraction } from '../model/hooks/useSessionQueueIntera
 import { useSessionSend } from '../model/hooks/useSessionSend';
 import { useSessionAttachments } from '../model/hooks/useSessionAttachments';
 import { useMessageEditRetry } from '../model/hooks/useMessageEditRetry';
+import { useClearContextMutation } from '../model/hooks/useClearContextMutation';
+import { EraserIcon } from '@phosphor-icons/react';
 import { useBranchStatus } from '@/shared/hooks/useBranchStatus';
 import { useWorkspaceBranch } from '../model/hooks/useWorkspaceBranch';
 import { useApprovalMutation } from '../model/hooks/useApprovalMutation';
@@ -42,6 +44,7 @@ import {
   SessionChatBox,
   type ExecutionStatus,
   type SessionChatBoxEditorRenderProps,
+  type SessionToolbarActionItem,
 } from '@vibe/ui/components/SessionChatBox';
 import { ModelSelectorContainer } from '@/shared/components/ModelSelectorContainer';
 import {
@@ -752,6 +755,16 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     }
   }, [workspaceId, repos, handleInsertMarkdown]);
 
+  // Clear-context mutation (drops the executor resume linkage so the next
+  // user message spawns a cold session). Branch, worktree, PR linkage, and
+  // prior message log are preserved on the backend.
+  const clearContextMutation = useClearContextMutation(sessionId, workspaceId);
+  const handleClearContext = useCallback(() => {
+    clearContextMutation.mutate();
+  }, [clearContextMutation]);
+  const isClearContextDisabled =
+    !sessionId || isSending || isStopping || clearContextMutation.isPending;
+
   // Toolbar actions handler
   const handleToolbarAction = useCallback(
     (action: ActionDefinition) => {
@@ -773,9 +786,9 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
     [actionCtx]
   );
 
-  const toolbarActionItems = useMemo(
-    () =>
-      toolbarActionsList.flatMap((action) => {
+  const toolbarActionItems = useMemo<SessionToolbarActionItem[]>(() => {
+    const items: SessionToolbarActionItem[] = toolbarActionsList.flatMap(
+      (action) => {
         if (isSpecialIcon(action.icon)) {
           return [];
         }
@@ -792,9 +805,32 @@ export function SessionChatBoxContainer(props: SessionChatBoxContainerProps) {
             onClick: () => handleToolbarAction(action),
           },
         ];
-      }),
-    [toolbarActionsList, actionCtx, handleToolbarAction]
-  );
+      }
+    );
+
+    // Append a "Clear context" item only when we have an active session.
+    // Confirmation + API call are handled inside the mutation hook.
+    if (sessionId) {
+      items.push({
+        id: 'clear-context',
+        icon: EraserIcon,
+        label: 'Clear context',
+        tooltip:
+          "Reset the agent's memory of this session. Branch, worktree, PR linkage, and prior message log are preserved.",
+        disabled: isClearContextDisabled,
+        onClick: handleClearContext,
+      });
+    }
+
+    return items;
+  }, [
+    toolbarActionsList,
+    actionCtx,
+    handleToolbarAction,
+    sessionId,
+    isClearContextDisabled,
+    handleClearContext,
+  ]);
 
   // Handle approve action
   const handleApprove = useCallback(async () => {

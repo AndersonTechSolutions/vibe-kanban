@@ -629,6 +629,44 @@ pub trait ContainerService {
         chained
     }
 
+    /// Clear the executor context for a session: stop any in-flight coding
+    /// agent process and stamp `sessions.cleared_at` so the next user message
+    /// spawns a cold executor session. The worktree, branch, PR linkage, and
+    /// prior message log all remain intact; the frontend renders a divider
+    /// at the cleared boundary.
+    async fn clear_session_context(&self, session_id: Uuid) -> Result<(), ContainerError> {
+        let pool = &self.db().pool;
+
+        let session = Session::find_by_id(pool, session_id)
+            .await?
+            .ok_or_else(|| ContainerError::Other(anyhow!("Session not found")))?;
+
+        // Stop any running coding-agent process for this session. Setup /
+        // cleanup / dev-server processes are left alone — they don't carry
+        // executor session state.
+        if let Ok(processes) = ExecutionProcess::find_by_session_id(pool, session.id, false).await {
+            for process in processes {
+                if process.status == ExecutionProcessStatus::Running
+                    && process.run_reason == ExecutionProcessRunReason::CodingAgent
+                {
+                    self.stop_execution(&process, ExecutionProcessStatus::Killed)
+                        .await
+                        .unwrap_or_else(|e| {
+                            tracing::debug!(
+                                "Failed to stop coding agent process {} during clear-context for session {}: {}",
+                                process.id,
+                                session.id,
+                                e
+                            );
+                        });
+                }
+            }
+        }
+
+        Session::clear_context(pool, session.id).await?;
+        Ok(())
+    }
+
     /// Reset a session to a specific process: restore worktrees, stop processes, drop later processes.
     async fn reset_session_to_process(
         &self,

@@ -33,6 +33,12 @@ pub struct CodingAgentResumeInfo {
 impl CodingAgentTurn {
     /// Find session info from the latest coding agent turn for a session.
     /// Only returns turns that have an agent_session_id set.
+    ///
+    /// Respects `sessions.cleared_at`: if the user has cleared the executor
+    /// context for this session, only turns created strictly after that
+    /// boundary are eligible. The next message therefore spawns a cold
+    /// executor session even though prior turns remain visible in the
+    /// timeline.
     pub async fn find_latest_session_info(
         pool: &SqlitePool,
         session_id: Uuid,
@@ -44,10 +50,12 @@ impl CodingAgentTurn {
                 cat.agent_message_id as "message_id"
                FROM execution_processes ep
                JOIN coding_agent_turns cat ON ep.id = cat.execution_process_id
+               JOIN sessions s ON ep.session_id = s.id
                WHERE ep.session_id = $1
                  AND ep.run_reason = 'codingagent'
                  AND ep.dropped = FALSE
                  AND cat.agent_session_id IS NOT NULL
+                 AND (s.cleared_at IS NULL OR ep.created_at > s.cleared_at)
                ORDER BY ep.created_at DESC
                LIMIT 1"#,
             session_id

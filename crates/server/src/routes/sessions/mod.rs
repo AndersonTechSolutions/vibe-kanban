@@ -254,6 +254,38 @@ pub async fn reset_process(
     Ok(ResponseJson(ApiResponse::success(())))
 }
 
+/// Clear the executor context for this session. Stops any in-flight coding
+/// agent turn and stamps `sessions.cleared_at` so the next user message
+/// spawns a cold executor session. Branch, worktree, PR linkage, and prior
+/// message log are preserved — the frontend renders a divider at the cleared
+/// boundary.
+pub async fn clear_context(
+    Extension(session): Extension<Session>,
+    State(deployment): State<DeploymentImpl>,
+) -> Result<ResponseJson<ApiResponse<Session>>, ApiError> {
+    deployment
+        .container()
+        .clear_session_context(session.id)
+        .await?;
+
+    let pool = &deployment.db().pool;
+    let updated = Session::find_by_id(pool, session.id)
+        .await?
+        .ok_or(ApiError::Session(SessionError::NotFound))?;
+
+    deployment
+        .track_if_analytics_allowed(
+            "session_context_cleared",
+            serde_json::json!({
+                "session_id": session.id.to_string(),
+                "workspace_id": session.workspace_id.to_string(),
+            }),
+        )
+        .await;
+
+    Ok(ResponseJson(ApiResponse::success(updated)))
+}
+
 pub async fn run_setup_script(
     Extension(session): Extension<Session>,
     State(deployment): State<DeploymentImpl>,
@@ -316,6 +348,7 @@ pub fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route("/", get(get_session).put(update_session))
         .route("/follow-up", post(follow_up))
         .route("/reset", post(reset_process))
+        .route("/clear-context", post(clear_context))
         .route("/setup", post(run_setup_script))
         .route("/review", post(review::start_review))
         .layer(from_fn_with_state(
