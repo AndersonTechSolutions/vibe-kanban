@@ -328,6 +328,12 @@ impl StandardCodingAgentExecutor for Codex {
             model_selector: ModelSelectorConfig {
                 models: vec![
                     ModelInfo {
+                        id: "gpt-5.6-codex".to_string(),
+                        name: "GPT-5.6 Codex".to_string(),
+                        provider_id: None,
+                        reasoning_options: xhigh_reasoning_options.clone(),
+                    },
+                    ModelInfo {
                         id: "gpt-5.5".to_string(),
                         name: "GPT-5.5".to_string(),
                         provider_id: None,
@@ -777,6 +783,10 @@ mod tests {
         assert_eq!(
             resolve_model(Some("gpt-5.4-mini")),
             (Some("gpt-5.4-mini"), false)
+        );
+        assert_eq!(
+            resolve_model(Some("gpt-5.6-codex")),
+            (Some("gpt-5.6-codex"), false)
         );
         assert_eq!(resolve_model(None), (None, false));
     }
