@@ -560,6 +560,13 @@ export const ConversationList = forwardRef<
   // partway down with the "scroll to bottom" arrow showing. We track scope
   // changes here and fire one extra `scrollToBottom('auto')` on the first
   // tick after entries become non-empty for a new scopeKey.
+  //
+  // Each pass gates on checkIsAtBottom(): the first pass always fires (we
+  // just entered the scope, the user has had no chance to interact yet),
+  // but the rAF follow-up passes skip if the user has already scrolled
+  // away. Without this gate, a user who started reading history during
+  // the 100ms belt-and-suspenders window would get yanked back to the
+  // bottom — exactly the "jumpy" behavior the Phase 4 plan calls out.
   const initialScrollScopeRef = useRef<string | null>(null);
   useEffect(() => {
     if (!hasEntries) return;
@@ -568,14 +575,23 @@ export const ConversationList = forwardRef<
     const t1 = window.setTimeout(() => {
       scrollToBottomAndClearSpacer('auto');
       // Second pass after another frame in case row measurements grew.
+      // Skip if the user has scrolled up between passes — preserve their
+      // chosen position rather than fighting it.
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          scrollToBottomAndClearSpacer('auto');
+          if (conversationVirtualizer.checkIsAtBottom()) {
+            scrollToBottomAndClearSpacer('auto');
+          }
         });
       });
     }, 50);
     return () => window.clearTimeout(t1);
-  }, [conversationScopeKey, hasEntries, scrollToBottomAndClearSpacer]);
+  }, [
+    conversationScopeKey,
+    hasEntries,
+    scrollToBottomAndClearSpacer,
+    conversationVirtualizer,
+  ]);
 
   // Show placeholders only if script not configured AND not already run AND first turn
   const showSetupPlaceholder =

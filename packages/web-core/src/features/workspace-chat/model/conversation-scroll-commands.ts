@@ -107,6 +107,15 @@ export function createInitialScrollState(): ScrollState {
 
 /**
  * Map a data update to the scroll intent that should be applied next.
+ *
+ * `isInitialLoad` chunks (the first batch of entries on workspace entry,
+ * plus subsequent batches in the same load cycle) gate on `isAtBottom`
+ * just like later updates. The scroll-to-bottom intent only fires when
+ * the user is still parked at the bottom — i.e. they haven't scrolled up
+ * to read history while the rest of the conversation is streaming in.
+ * Without this gate, every streaming chunk re-anchors the viewport and
+ * fights any in-progress user scroll. (Phase 4 of the May 2026 UX-gaps
+ * plan, anchor-aware fix.)
  */
 export function resolveScrollIntent(
   addType: AddEntryType,
@@ -114,7 +123,9 @@ export function resolveScrollIntent(
   isAtBottom: boolean
 ): ScrollIntent {
   if (isInitialLoad) {
-    return { type: 'initial-bottom', purgeEstimatedSizes: true };
+    return isAtBottom
+      ? { type: 'initial-bottom', purgeEstimatedSizes: true }
+      : { type: 'preserve-anchor' };
   }
 
   if (addType === 'plan') {
