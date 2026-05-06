@@ -36,7 +36,9 @@ import {
   isAggregatedGroup,
   isAggregatedDiffGroup,
   isAggregatedThinkingGroup,
+  isContextClearedDivider,
 } from '@/shared/hooks/useConversationHistory/types';
+import { ContextClearedDivider } from './ContextClearedDivider';
 import { useConversationHistory } from '../model/hooks/useConversationHistory';
 import { useSetTokenUsageInfo } from '../model/contexts/EntriesContext';
 import type { WorkspaceWithSession } from '@/shared/types/attempt';
@@ -70,6 +72,10 @@ function renderRowContent(
   resetAction: UseResetProcessResult,
   repos: RepoWithTargetBranch[]
 ): React.ReactNode {
+  if (isContextClearedDivider(entry)) {
+    return <ContextClearedDivider clearedAt={entry.clearedAt} />;
+  }
+
   if (isAggregatedGroup(entry)) {
     return (
       <DisplayConversationEntry
@@ -346,10 +352,23 @@ export const ConversationList = forwardRef<
     setHasRunningProcess(derivedEntries.hasRunningProcess);
     setTokenUsageInfo(derivedEntries.latestTokenUsageInfo);
 
+    // Build a process_id → created_at map so the timeline can position the
+    // "context cleared" divider at the boundary where post-clear executions
+    // begin. Phase 5 of the May 2026 UX-gaps plan.
+    const processCreatedAtById = new Map<string, string>();
+    for (const state of Object.values(pending.source.executionProcessState)) {
+      processCreatedAtById.set(
+        state.executionProcess.id,
+        state.executionProcess.created_at
+      );
+    }
+
     const derivedTimeline = deriveConversationTimeline(
       derivedEntries.entries,
       prevEntriesRef.current,
-      prevRowsRef.current
+      prevRowsRef.current,
+      attempt.session?.cleared_at ?? null,
+      processCreatedAtById
     );
 
     prevEntriesRef.current = derivedTimeline.displayEntries;

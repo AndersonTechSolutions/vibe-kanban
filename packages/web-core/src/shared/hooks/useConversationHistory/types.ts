@@ -65,11 +65,35 @@ export type AggregatedThinkingGroup = {
   executionProcessId: string;
 };
 
+/**
+ * Frontend-only synthetic entry rendered as a horizontal divider in the
+ * conversation log when the user has cleared the executor context for the
+ * session. Inserted at the boundary between pre-clear and post-clear
+ * execution processes by `deriveConversationTimeline`. Phase 5 of the
+ * May 2026 UX-gaps plan.
+ */
+export type ContextClearedDivider = {
+  type: 'CONTEXT_CLEARED_DIVIDER';
+  /** ISO timestamp of when the clear happened (from sessions.cleared_at). */
+  clearedAt: string;
+  /** Stable key derived from clearedAt so React doesn't churn the row. */
+  patchKey: string;
+  /** Synthetic rows have no owning execution process. */
+  executionProcessId: '';
+};
+
 export type DisplayEntry =
   | PatchTypeWithKey
   | AggregatedPatchGroup
   | AggregatedDiffGroup
-  | AggregatedThinkingGroup;
+  | AggregatedThinkingGroup
+  | ContextClearedDivider;
+
+export function isContextClearedDivider(
+  entry: DisplayEntry
+): entry is ContextClearedDivider {
+  return entry.type === 'CONTEXT_CLEARED_DIVIDER';
+}
 
 export function isAggregatedGroup(
   entry: DisplayEntry

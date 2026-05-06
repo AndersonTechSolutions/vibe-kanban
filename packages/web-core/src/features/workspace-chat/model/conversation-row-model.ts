@@ -37,7 +37,9 @@ export type RowFamily =
   // Aggregated group types
   | 'aggregated_tool' // AGGREGATED_GROUP
   | 'aggregated_diff' // AGGREGATED_DIFF_GROUP
-  | 'aggregated_thinking'; // AGGREGATED_THINKING_GROUP
+  | 'aggregated_thinking' // AGGREGATED_THINKING_GROUP
+  // Frontend-only synthetic dividers
+  | 'context_cleared_divider'; // CONTEXT_CLEARED_DIVIDER
 
 // ---------------------------------------------------------------------------
 // Size Estimation Hint
@@ -106,6 +108,10 @@ const SCRIPT_TOOL_NAMES = new Set([
  * Determine the renderer family for a display entry.
  */
 export function classifyRowFamily(entry: DisplayEntry): RowFamily {
+  // Synthetic divider injected by the timeline-derivation step
+  if (entry.type === 'CONTEXT_CLEARED_DIVIDER')
+    return 'context_cleared_divider';
+
   // Aggregated group types
   if (entry.type === 'AGGREGATED_GROUP') return 'aggregated_tool';
   if (entry.type === 'AGGREGATED_DIFF_GROUP') return 'aggregated_diff';
@@ -289,6 +295,10 @@ export function estimationHintForFamily(family: RowFamily): SizeEstimationHint {
     case 'aggregated_tool':
     case 'aggregated_diff':
     case 'aggregated_thinking':
+      return 'compact';
+
+    // The clear-context divider is a single thin horizontal line.
+    case 'context_cleared_divider':
       return 'compact';
 
     // Dynamic: height changes significantly based on state
