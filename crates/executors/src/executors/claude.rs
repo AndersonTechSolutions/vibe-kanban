@@ -663,6 +663,13 @@ impl ClaudeCode {
         // Create cancellation token for graceful shutdown
         let cancel = CancellationToken::new();
 
+        // Channel that signals "this turn is done" from the protocol reader
+        // back to the container's exit-monitor. The reader fires Success when
+        // it sees a Result message, Failure on unexpected EOF / IO errors.
+        // Without this signal the Claude child stays alive between turns and
+        // the queue runner waits forever for an OS exit that never comes.
+        let (exit_signal_tx, exit_signal_rx) = tokio::sync::oneshot::channel();
+
         // Spawn task to handle the SDK client with control protocol
         let prompt_clone = combined_prompt.clone();
         let approvals_clone = self.approvals_service.clone();
@@ -678,8 +685,13 @@ impl ClaudeCode {
                 commit_reminder_prompt,
                 cancel_for_task.clone(),
             );
-            let protocol_peer =
-                ProtocolPeer::spawn(child_stdin, child_stdout, client.clone(), cancel_for_task);
+            let protocol_peer = ProtocolPeer::spawn(
+                child_stdin,
+                child_stdout,
+                client.clone(),
+                cancel_for_task,
+                exit_signal_tx,
+            );
 
             // Initialize control protocol
             if let Err(e) = protocol_peer.initialize(hooks).await {
@@ -705,7 +717,7 @@ impl ClaudeCode {
 
         Ok(SpawnedChild {
             child,
-            exit_signal: None,
+            exit_signal: Some(exit_signal_rx),
             cancel: Some(cancel),
         })
     }

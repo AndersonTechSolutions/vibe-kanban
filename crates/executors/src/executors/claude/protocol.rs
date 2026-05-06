@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{ChildStdin, ChildStdout},
-    sync::Mutex,
+    sync::{Mutex, oneshot},
 };
 use tokio_util::sync::CancellationToken;
 
@@ -11,7 +11,7 @@ use super::types::{CLIMessage, ControlRequestType, ControlResponseMessage, Contr
 use crate::{
     approvals::ExecutorApprovalError,
     executors::{
-        ExecutorError,
+        ExecutorError, ExecutorExitResult,
         claude::{
             client::ClaudeAgentClient,
             types::{Message, PermissionMode, SDKControlRequest, SDKControlRequestType},
@@ -31,6 +31,7 @@ impl ProtocolPeer {
         stdout: ChildStdout,
         client: Arc<ClaudeAgentClient>,
         cancel: CancellationToken,
+        exit_signal_tx: oneshot::Sender<ExecutorExitResult>,
     ) -> Self {
         let peer = Self {
             stdin: Arc::new(Mutex::new(stdin)),
@@ -38,9 +39,19 @@ impl ProtocolPeer {
 
         let reader_peer = peer.clone();
         tokio::spawn(async move {
-            if let Err(e) = reader_peer.read_loop(stdout, client, cancel).await {
-                tracing::error!("Protocol reader loop error: {}", e);
-            }
+            // The read loop returns the canonical "this turn is done" signal:
+            // `Success` when the Claude CLI emits a Result message, `Failure`
+            // for unexpected EOF / I/O errors. Forwarded to the container's
+            // exit-monitor so the queue runner can dispatch any queued
+            // follow-up message (Phase 3 of the May 2026 UX-gaps plan).
+            let result = match reader_peer.read_loop(stdout, client, cancel).await {
+                Ok(turn_result) => turn_result,
+                Err(e) => {
+                    tracing::error!("Protocol reader loop error: {}", e);
+                    ExecutorExitResult::Failure
+                }
+            };
+            let _ = exit_signal_tx.send(result);
         });
 
         peer
@@ -51,10 +62,14 @@ impl ProtocolPeer {
         stdout: ChildStdout,
         client: Arc<ClaudeAgentClient>,
         cancel: CancellationToken,
-    ) -> Result<(), ExecutorError> {
+    ) -> Result<ExecutorExitResult, ExecutorError> {
         let mut reader = BufReader::new(stdout);
         let mut buffer = String::new();
         let mut interrupt_sent = false;
+        // Track whether we exited via a Claude-emitted Result (clean turn end)
+        // vs unexpected EOF / IO error. EOF without a Result is a Failure: the
+        // child died mid-turn and there's no transcript checkpoint to resume.
+        let mut saw_result = false;
 
         loop {
             buffer.clear();
@@ -88,6 +103,7 @@ impl ProtocolPeer {
                                         .await;
                                 }
                                 Ok(CLIMessage::Result(_)) => {
+                                    saw_result = true;
                                     break;
                                 }
                                 _ => {}
@@ -101,7 +117,11 @@ impl ProtocolPeer {
                 }
             }
         }
-        Ok(())
+        Ok(if saw_result {
+            ExecutorExitResult::Success
+        } else {
+            ExecutorExitResult::Failure
+        })
     }
 
     async fn handle_control_request(
