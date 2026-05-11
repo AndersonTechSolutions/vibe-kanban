@@ -198,6 +198,19 @@ export const ConversationList = forwardRef<
   const pendingInteractionAnchorFrameRef = useRef<number | null>(null);
   const pendingInteractionAnchorDeadlineRef = useRef(0);
 
+  // Anchor captured before a history batch commits, used to keep the user's
+  // first visible row stable when older execution-process entries are
+  // prepended. TanStack Virtual's shouldAdjustScrollPositionOnItemSizeChange
+  // fires only for size changes of existing items, not for insertions, so
+  // prepends would otherwise shift the viewport to older content. Re-queried
+  // by data-semantic-key each frame so virtualizer in/out churn is tolerated.
+  const pendingDataAnchorRef = useRef<{
+    semanticKey: string;
+    top: number;
+  } | null>(null);
+  const pendingDataAnchorFrameRef = useRef<number | null>(null);
+  const pendingDataAnchorDeadlineRef = useRef(0);
+
   // Use ref to access current repos without causing callback recreation
   const reposRef = useRef(repos);
   reposRef.current = repos;
@@ -280,7 +293,9 @@ export const ConversationList = forwardRef<
     () =>
       performance.now() < programmaticScrollDeadlineRef.current ||
       (pendingInteractionAnchorRef.current !== null &&
-        performance.now() < pendingInteractionAnchorDeadlineRef.current),
+        performance.now() < pendingInteractionAnchorDeadlineRef.current) ||
+      (pendingDataAnchorRef.current !== null &&
+        performance.now() < pendingDataAnchorDeadlineRef.current),
     []
   );
 
@@ -309,6 +324,44 @@ export const ConversationList = forwardRef<
 
     clearPendingInteractionAnchor();
   }, [clearPendingInteractionAnchor]);
+
+  const clearPendingDataAnchor = useCallback(() => {
+    if (pendingDataAnchorFrameRef.current !== null) {
+      cancelAnimationFrame(pendingDataAnchorFrameRef.current);
+      pendingDataAnchorFrameRef.current = null;
+    }
+    pendingDataAnchorDeadlineRef.current = 0;
+    pendingDataAnchorRef.current = null;
+  }, []);
+
+  const runDataAnchorCorrection = useCallback(() => {
+    pendingDataAnchorFrameRef.current = null;
+    const anchor = pendingDataAnchorRef.current;
+    const scrollEl = tanstackScrollRef.current;
+    if (!anchor || !scrollEl) {
+      clearPendingDataAnchor();
+      return;
+    }
+
+    const node = scrollEl.querySelector<HTMLElement>(
+      `[data-semantic-key="${CSS.escape(anchor.semanticKey)}"]`
+    );
+    if (node) {
+      const delta = node.getBoundingClientRect().top - anchor.top;
+      if (Math.abs(delta) >= 0.5) {
+        scrollEl.scrollTop += delta;
+      }
+    }
+
+    if (performance.now() < pendingDataAnchorDeadlineRef.current) {
+      pendingDataAnchorFrameRef.current = requestAnimationFrame(
+        runDataAnchorCorrection
+      );
+      return;
+    }
+
+    clearPendingDataAnchor();
+  }, [clearPendingDataAnchor]);
 
   const handleConversationClickCapture = useCallback(
     (event: MouseEvent<HTMLDivElement>) => {
@@ -341,6 +394,44 @@ export const ConversationList = forwardRef<
     rafIdRef.current = null;
     const pending = pendingUpdateRef.current;
     if (!pending) return;
+
+    // When older history is being prepended ('initial' or 'historic') and
+    // the user has scrolled up to read, capture the first visible row's
+    // current top. After React commits the new rows, runDataAnchorCorrection
+    // re-queries that row by semantic key and bumps scrollTop by the delta,
+    // so the reader stays parked on the same message instead of getting
+    // shoved to older content by the growing totalSize.
+    if (
+      (pending.addType === 'historic' || pending.addType === 'initial') &&
+      !conversationVirtualizer.checkIsAtBottom()
+    ) {
+      const scrollEl = tanstackScrollRef.current;
+      if (scrollEl) {
+        const containerTop = scrollEl.getBoundingClientRect().top;
+        const nodes = scrollEl.querySelectorAll<HTMLElement>(
+          '[data-semantic-key]'
+        );
+        for (const node of nodes) {
+          const rect = node.getBoundingClientRect();
+          if (rect.bottom > containerTop) {
+            const key = node.dataset.semanticKey;
+            if (key) {
+              clearPendingDataAnchor();
+              pendingDataAnchorRef.current = {
+                semanticKey: key,
+                top: rect.top,
+              };
+              pendingDataAnchorDeadlineRef.current =
+                performance.now() + 300;
+              pendingDataAnchorFrameRef.current = requestAnimationFrame(
+                runDataAnchorCorrection
+              );
+            }
+            break;
+          }
+        }
+      }
+    }
 
     const derivedEntries = deriveConversationEntries({
       source: pending.source,
@@ -809,8 +900,9 @@ export const ConversationList = forwardRef<
   useEffect(() => {
     return () => {
       clearPendingInteractionAnchor();
+      clearPendingDataAnchor();
     };
-  }, [clearPendingInteractionAnchor]);
+  }, [clearPendingInteractionAnchor, clearPendingDataAnchor]);
 
   return (
     <ApprovalFormProvider>
