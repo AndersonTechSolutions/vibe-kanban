@@ -10,7 +10,6 @@ import type {
   AddEntryType,
   ConversationTimelineSource,
   ExecutionProcessStateStore,
-  PatchTypeWithKey,
   UseConversationHistoryParams,
 } from '@/shared/hooks/useConversationHistory/types';
 
@@ -21,10 +20,7 @@ export interface UseConversationHistoryResult {
   /** Whether background batches are still loading older history entries */
   isLoadingHistory: boolean;
 }
-import {
-  MIN_INITIAL_ENTRIES,
-  REMAINING_BATCH_SIZE,
-} from '@/shared/hooks/useConversationHistory/constants';
+import { fetchHistoricEntriesBulk } from '@/shared/lib/fetchHistoricEntriesBulk';
 
 export const useConversationHistory = ({
   onTimelineUpdated,
@@ -133,28 +129,6 @@ export const useConversationHistory = ({
     };
   };
 
-  const flattenEntries = (
-    executionProcessState: ExecutionProcessStateStore
-  ): PatchTypeWithKey[] => {
-    return Object.values(executionProcessState)
-      .filter(
-        (p) =>
-          p.executionProcess.executor_action.typ.type ===
-            'CodingAgentFollowUpRequest' ||
-          p.executionProcess.executor_action.typ.type ===
-            'CodingAgentInitialRequest' ||
-          p.executionProcess.executor_action.typ.type === 'ReviewRequest'
-      )
-      .sort(
-        (a, b) =>
-          new Date(
-            a.executionProcess.created_at as unknown as string
-          ).getTime() -
-          new Date(b.executionProcess.created_at as unknown as string).getTime()
-      )
-      .flatMap((p) => p.entries);
-  };
-
   const getActiveAgentProcesses = (): ExecutionProcess[] => {
     return (
       executionProcesses?.current.filter(
@@ -257,82 +231,37 @@ export const useConversationHistory = ({
     [loadRunningAndEmit]
   );
 
-  const loadHistoricEntries = useCallback(
-    async (maxEntries?: number): Promise<ExecutionProcessStateStore> => {
-      const localDisplayedExecutionProcesses: ExecutionProcessStateStore = {};
+  // Fetch every historic execution-process's entries in a single round
+  // trip via the bulk endpoint. Replaces the prior N-WebSocket serial
+  // loop and lets the workspace render its full history at once instead
+  // of dripping it in over many seconds.
+  const loadHistoricEntries =
+    useCallback(async (): Promise<ExecutionProcessStateStore> => {
+      const result: ExecutionProcessStateStore = {};
+      if (!executionProcesses?.current) return result;
 
-      if (!executionProcesses?.current) return localDisplayedExecutionProcesses;
+      const historic = executionProcesses.current.filter(
+        (p) => p.status !== ExecutionProcessStatus.running
+      );
+      if (historic.length === 0) return result;
 
-      for (const executionProcess of [
-        ...executionProcesses.current,
-      ].reverse()) {
-        if (executionProcess.status === ExecutionProcessStatus.running)
-          continue;
-
-        const entries =
-          await loadEntriesForHistoricExecutionProcess(executionProcess);
+      const byId = new Map(historic.map((p) => [p.id, p]));
+      const entriesById = await fetchHistoricEntriesBulk(
+        historic.map((p) => p.id)
+      );
+      for (const [id, entries] of entriesById) {
+        const proc = byId.get(id);
+        if (!proc) continue;
         const entriesWithKey = entries.map((e, idx) =>
-          patchWithKey(e, executionProcess.id, idx)
+          patchWithKey(e, id, idx)
         );
-
-        localDisplayedExecutionProcesses[executionProcess.id] = {
-          executionProcess,
+        result[id] = {
+          executionProcess: proc,
           entries: entriesWithKey,
         };
-
-        if (
-          maxEntries != null &&
-          flattenEntries(localDisplayedExecutionProcesses).length > maxEntries
-        ) {
-          break;
-        }
       }
-
-      return localDisplayedExecutionProcesses;
-    },
-    [executionProcesses]
-  );
-
-  const loadRemainingEntriesInBatches = useCallback(
-    async (batchSize: number): Promise<boolean> => {
-      if (!executionProcesses?.current) return false;
-
-      let anyUpdated = false;
-      for (const executionProcess of [
-        ...executionProcesses.current,
-      ].reverse()) {
-        const current = displayedExecutionProcesses.current;
-        if (
-          current[executionProcess.id] ||
-          executionProcess.status === ExecutionProcessStatus.running
-        )
-          continue;
-
-        const entries =
-          await loadEntriesForHistoricExecutionProcess(executionProcess);
-        const entriesWithKey = entries.map((e, idx) =>
-          patchWithKey(e, executionProcess.id, idx)
-        );
-
-        mergeIntoDisplayed((state) => {
-          state[executionProcess.id] = {
-            executionProcess,
-            entries: entriesWithKey,
-          };
-        });
-
-        if (
-          flattenEntries(displayedExecutionProcesses.current).length > batchSize
-        ) {
-          anyUpdated = true;
-          break;
-        }
-        anyUpdated = true;
-      }
-      return anyUpdated;
-    },
-    [executionProcesses]
-  );
+      return result;
+    }, [executionProcesses]);
 
   const ensureProcessVisible = useCallback((p: ExecutionProcess) => {
     mergeIntoDisplayed((state) => {
@@ -392,7 +321,6 @@ export const useConversationHistory = ({
     let cancelled = false;
     (async () => {
       if (loadedInitialEntries.current) return;
-
       if (isLoading) return;
 
       if (executionProcesses.current.length === 0) {
@@ -404,23 +332,18 @@ export const useConversationHistory = ({
 
       emittedEmptyInitialRef.current = false;
 
-      const allInitialEntries = await loadHistoricEntries(MIN_INITIAL_ENTRIES);
-      if (cancelled) return;
-      loadedInitialEntries.current = true;
-      mergeIntoDisplayed((state) => {
-        Object.assign(state, allInitialEntries);
-      });
-      emitEntries(displayedExecutionProcesses.current, 'initial', false);
-
       setIsLoadingHistory(true);
-      while (
-        !cancelled &&
-        (await loadRemainingEntriesInBatches(REMAINING_BATCH_SIZE))
-      ) {
+      try {
+        const allEntries = await loadHistoricEntries();
         if (cancelled) return;
-        emitEntries(displayedExecutionProcesses.current, 'historic', false);
+        loadedInitialEntries.current = true;
+        mergeIntoDisplayed((state) => {
+          Object.assign(state, allEntries);
+        });
+        emitEntries(displayedExecutionProcesses.current, 'initial', false);
+      } finally {
+        if (!cancelled) setIsLoadingHistory(false);
       }
-      if (!cancelled) setIsLoadingHistory(false);
     })();
     return () => {
       cancelled = true;
@@ -430,7 +353,6 @@ export const useConversationHistory = ({
     idListKey,
     isLoading,
     loadHistoricEntries,
-    loadRemainingEntriesInBatches,
     emitEntries,
   ]); // include idListKey so new processes trigger reload
 
