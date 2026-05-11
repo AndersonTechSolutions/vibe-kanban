@@ -12,7 +12,8 @@ use db::models::{
 };
 use deployment::Deployment;
 use futures_util::{StreamExt, TryStreamExt};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use services::services::container::ContainerService;
 use utils::{log_msg::LogMsg, response::ApiResponse};
 use uuid::Uuid;
@@ -32,6 +33,24 @@ struct SessionExecutionProcessQuery {
     /// If true, include soft-deleted (dropped) processes in results/stream
     #[serde(default)]
     pub show_soft_deleted: Option<bool>,
+}
+
+/// Request body for the bulk-history endpoint. `ids` are the
+/// execution-process ids whose normalized log history the client wants
+/// rehydrated in a single response (vs. opening N WebSockets in a row).
+#[derive(Debug, Deserialize)]
+struct BulkHistoryRequest {
+    pub ids: Vec<Uuid>,
+}
+
+/// Per-id history payload. `LogMsg` is reused here so the server-side
+/// serde derive emits the same envelope (e.g. `{"JsonPatch": [..]}` or
+/// `{"Stdout": ".."}`) that the WebSocket transport already produces.
+/// The trailing `Finished` sentinel is stripped server-side so callers
+/// don't have to filter it back out.
+#[derive(Debug, Serialize)]
+struct BulkHistoryResponse {
+    pub entries_by_process: HashMap<String, Vec<LogMsg>>,
 }
 
 async fn get_execution_process_by_id(
@@ -200,6 +219,51 @@ async fn handle_normalized_logs_ws(
     Ok(())
 }
 
+/// Bulk fetch of normalized log history for many execution processes in
+/// one round-trip. Replaces the previous "open one WebSocket per process
+/// and await it serially" loop on the client.
+///
+/// Per id, the underlying [`ContainerService::stream_normalized_logs`]
+/// stream is drained to a `Vec<LogMsg>`. ScriptRequest processes return
+/// `None` from that stream and surface here as an empty Vec, matching the
+/// client's prior "empty entries for script processes" behaviour.
+async fn bulk_normalized_history(
+    State(deployment): State<DeploymentImpl>,
+    axum::Json(req): axum::Json<BulkHistoryRequest>,
+) -> Result<ResponseJson<ApiResponse<BulkHistoryResponse>>, ApiError> {
+    // Defence against a runaway request — current workspaces don't get
+    // remotely close to this many turns in a single load.
+    const MAX_IDS: usize = 500;
+    if req.ids.len() > MAX_IDS {
+        return Err(ApiError::BadRequest(format!(
+            "bulk history limited to {MAX_IDS} ids per request (got {})",
+            req.ids.len()
+        )));
+    }
+
+    let container = deployment.container();
+    let results = futures_util::future::join_all(req.ids.iter().map(|id| async {
+        let stream = container.stream_normalized_logs(id).await;
+        let msgs: Vec<LogMsg> = match stream {
+            Some(s) => s
+                .err_into::<anyhow::Error>()
+                .try_filter(|msg| {
+                    futures_util::future::ready(!matches!(msg, LogMsg::Finished))
+                })
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        (id.to_string(), msgs)
+    }))
+    .await;
+
+    Ok(ResponseJson(ApiResponse::success(BulkHistoryResponse {
+        entries_by_process: results.into_iter().collect(),
+    })))
+}
+
 async fn stop_execution_process(
     Extension(execution_process): Extension<ExecutionProcess>,
     State(deployment): State<DeploymentImpl>,
@@ -299,6 +363,10 @@ pub(super) fn router(deployment: &DeploymentImpl) -> Router<DeploymentImpl> {
         .route(
             "/stream/session/ws",
             get(stream_execution_processes_by_session_ws),
+        )
+        .route(
+            "/normalized-logs/bulk",
+            post(bulk_normalized_history),
         )
         .nest("/{id}", workspace_id_router);
 
