@@ -16,6 +16,14 @@ import type { AddEntryType } from '@/shared/hooks/useConversationHistory/types';
  */
 export const NEAR_BOTTOM_THRESHOLD_PX = 64;
 
+/**
+ * Pixel distance from bottom within which the user is considered exactly parked
+ * at the bottom for initial-load anchoring decisions. Stricter than
+ * NEAR_BOTTOM_THRESHOLD_PX so that even a tiny upward scroll switches
+ * resolveScrollIntent away from `initial-bottom` and enables anchor capture.
+ */
+export const EXACTLY_AT_BOTTOM_THRESHOLD_PX = 1;
+
 // ---------------------------------------------------------------------------
 // Scroll Intent
 // ---------------------------------------------------------------------------
@@ -120,10 +128,19 @@ export function createInitialScrollState(): ScrollState {
 export function resolveScrollIntent(
   addType: AddEntryType,
   isInitialLoad: boolean,
-  isAtBottom: boolean
+  isAtBottom: boolean,
+  isExactlyAtBottom: boolean
 ): ScrollIntent {
   if (isInitialLoad) {
-    return isAtBottom
+    // Use the strict exact-bottom check here. The 64px NEAR_BOTTOM_THRESHOLD_PX
+    // is correct for "user is parked, follow live" but wrong for the bulk
+    // initial-history commit: when a user has slightly scrolled up to read
+    // history (still inside the 64px band), the loose check fires
+    // `initial-bottom` -> scrollToBottom and yanks them back, fighting the
+    // anchor-correction loop. With the strict check, any nonzero upward
+    // scroll commits to `preserve-anchor` and the data anchor in
+    // `flushPendingUpdate` keeps the visible row stable.
+    return isExactlyAtBottom
       ? { type: 'initial-bottom', purgeEstimatedSizes: true }
       : { type: 'preserve-anchor' };
   }
@@ -220,6 +237,31 @@ export function isNearBottom(
 
   const distanceFromBottom = scrollHeight - clientHeight - scrollTop;
   return distanceFromBottom <= NEAR_BOTTOM_THRESHOLD_PX;
+}
+
+/**
+ * Stricter cousin of `isNearBottom`. Returns true only when the scroll
+ * container is within `EXACTLY_AT_BOTTOM_THRESHOLD_PX` of the bottom, i.e.
+ * the user has not initiated any upward scroll. Used to gate initial-load
+ * intent resolution and bulk-commit anchor capture; both must treat any
+ * deliberate user scroll as "stop following bottom" even if it's still
+ * within the 64px live-follow affordance band.
+ */
+export function isExactlyAtBottom(
+  scrollTop: number,
+  clientHeight: number,
+  scrollHeight: number
+): boolean {
+  if (
+    !Number.isFinite(scrollTop) ||
+    !Number.isFinite(clientHeight) ||
+    !Number.isFinite(scrollHeight)
+  ) {
+    return true;
+  }
+
+  const distanceFromBottom = scrollHeight - clientHeight - scrollTop;
+  return distanceFromBottom <= EXACTLY_AT_BOTTOM_THRESHOLD_PX;
 }
 
 // ---------------------------------------------------------------------------

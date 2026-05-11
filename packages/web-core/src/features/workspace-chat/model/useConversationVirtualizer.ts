@@ -26,7 +26,8 @@ import {
   findPreviousUserMessageIndex,
 } from './conversation-row-model';
 import {
-  NEAR_BOTTOM_THRESHOLD_PX,
+  EXACTLY_AT_BOTTOM_THRESHOLD_PX,
+  isExactlyAtBottom,
   isNearBottom,
 } from './conversation-scroll-commands';
 
@@ -114,6 +115,13 @@ export interface ConversationVirtualizerResult {
 
   /** Point-in-time check (non-reactive). Reads DOM directly. */
   checkIsAtBottom: () => boolean;
+
+  /**
+   * Point-in-time exact-bottom check (non-reactive). Stricter than
+   * `checkIsAtBottom` — returns true only when the user is within
+   * `EXACTLY_AT_BOTTOM_THRESHOLD_PX` (1px) of the scrollable bottom.
+   */
+  checkIsExactlyAtBottom: () => boolean;
 
   /**
    * Release the bottom-lock. Call when navigating away from the
@@ -213,7 +221,15 @@ export function useConversationVirtualizer({
         !isBottomLocked &&
         !shouldSuppressSizeAdjustment?.() &&
         isItemFullyAboveViewport &&
-        remainingDistance > NEAR_BOTTOM_THRESHOLD_PX;
+        // Tightened from NEAR_BOTTOM_THRESHOLD_PX (64px) to the strict
+        // EXACTLY_AT_BOTTOM_THRESHOLD_PX (1px). With the looser guard, any
+        // user who scrolled up but stayed in the 64px live-follow band saw
+        // their position shift each time a row above the viewport
+        // re-measured to its real (vs estimated) size. Bottom-lock and the
+        // shouldSuppressSizeAdjustment predicate already prevent the
+        // measurement-feedback loop in the live-follow case, so this guard
+        // only needs to suppress adjustment when truly parked at the bottom.
+        remainingDistance > EXACTLY_AT_BOTTOM_THRESHOLD_PX;
 
       return shouldAdjust;
     };
@@ -383,6 +399,12 @@ export function useConversationVirtualizer({
     return isNearBottom(el.scrollTop, el.clientHeight, el.scrollHeight);
   }, [scrollContainerRef]);
 
+  const checkIsExactlyAtBottom = useCallback((): boolean => {
+    const el = scrollContainerRef.current;
+    if (!el) return true;
+    return isExactlyAtBottom(el.scrollTop, el.clientHeight, el.scrollHeight);
+  }, [scrollContainerRef]);
+
   const releaseBottomLock = useCallback(() => {
     if (!bottomLockedRef.current) return;
     bottomLockedRef.current = false;
@@ -423,6 +445,7 @@ export function useConversationVirtualizer({
     scrollToPreviousUserMessage,
     isAtBottom: isAtBottomState,
     checkIsAtBottom,
+    checkIsExactlyAtBottom,
     releaseBottomLock,
     rowIndexForVirtualItem,
     rowForVirtualItem,

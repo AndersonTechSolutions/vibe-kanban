@@ -53,6 +53,9 @@ export interface ScrollCommandExecutorOptions {
   /** Point-in-time DOM check for isAtBottom (avoids stale React state). */
   checkIsAtBottom: () => boolean;
 
+  /** Point-in-time DOM check for exact-bottom (1px threshold). */
+  checkIsExactlyAtBottom: () => boolean;
+
   scrollToBottom: (behavior?: TanStackScrollBehavior) => void;
 
   scrollToAbsoluteIndex?: (
@@ -98,6 +101,7 @@ export function useScrollCommandExecutor({
   itemCount,
   dataVersion,
   checkIsAtBottom,
+  checkIsExactlyAtBottom,
   scrollToBottom,
   scrollToAbsoluteIndex,
 }: ScrollCommandExecutorOptions): ScrollCommandExecutorResult {
@@ -113,11 +117,12 @@ export function useScrollCommandExecutor({
       const intent = resolveScrollIntent(
         addType,
         isInitialLoad,
-        checkIsAtBottom()
+        checkIsAtBottom(),
+        checkIsExactlyAtBottom()
       );
       stateRef.current = setPendingIntent(stateRef.current, intent);
     },
-    [checkIsAtBottom]
+    [checkIsAtBottom, checkIsExactlyAtBottom]
   );
 
   // -------------------------------------------------------------------------

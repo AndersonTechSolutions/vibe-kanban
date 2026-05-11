@@ -403,7 +403,7 @@ export const ConversationList = forwardRef<
     // shoved to older content by the growing totalSize.
     if (
       (pending.addType === 'historic' || pending.addType === 'initial') &&
-      !conversationVirtualizer.checkIsAtBottom()
+      !conversationVirtualizer.checkIsExactlyAtBottom()
     ) {
       const scrollEl = tanstackScrollRef.current;
       if (scrollEl) {
@@ -654,6 +654,7 @@ export const ConversationList = forwardRef<
     itemCount: conversationRows.length,
     dataVersion,
     checkIsAtBottom: conversationVirtualizer.checkIsAtBottom,
+    checkIsExactlyAtBottom: conversationVirtualizer.checkIsExactlyAtBottom,
     scrollToBottom: scrollToBottomAndClearSpacer,
     scrollToAbsoluteIndex,
   });
