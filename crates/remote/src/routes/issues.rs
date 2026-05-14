@@ -1,6 +1,6 @@
 use api_types::{
     CreateIssueRequest, DeleteResponse, Issue, ListIssuesQuery, ListIssuesResponse,
-    MutationResponse, NotificationPayload, NotificationType, SearchIssuesRequest,
+    MoveIssueRequest, MutationResponse, NotificationPayload, NotificationType, SearchIssuesRequest,
     UpdateIssueRequest,
 };
 use axum::{
@@ -21,7 +21,8 @@ use crate::{
     AppState,
     auth::RequestContext,
     db::{
-        get_txid, issue_followers::IssueFollowerRepository, issues::IssueRepository,
+        get_txid, issue_followers::IssueFollowerRepository,
+        issues::{IssueError, IssueRepository, MoveValidationError, validate_move_request},
         project_statuses::ProjectStatusRepository,
     },
     mutation_definition::MutationBuilder,
@@ -40,12 +41,104 @@ pub fn mutation() -> MutationBuilder<Issue, CreateIssueRequest, UpdateIssueReque
         .delete(delete_issue)
 }
 
+#[instrument(
+    name = "issues.move_issue",
+    skip(state, ctx),
+    fields(
+        issue_id = %issue_id,
+        user_id = %ctx.user.id,
+        destination_project_id = %payload.destination_project_id,
+        destination_status_id = %payload.destination_status_id,
+    )
+)]
+async fn move_issue(
+    State(state): State<AppState>,
+    Extension(ctx): Extension<RequestContext>,
+    Path(issue_id): Path<Uuid>,
+    Json(payload): Json<MoveIssueRequest>,
+) -> Result<Json<MutationResponse<Issue>>, ErrorResponse> {
+    // 1. Load the source issue (404 if missing).
+    let old_issue = IssueRepository::find_by_id(state.pool(), issue_id)
+        .await
+        .map_err(|error| {
+            tracing::error!(?error, %issue_id, "failed to load issue");
+            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "failed to load issue")
+        })?
+        .ok_or_else(|| ErrorResponse::new(StatusCode::NOT_FOUND, "issue not found"))?;
+
+    // 2. Pre-flight validation (pure).
+    if let Err(MoveValidationError::SameDestination) =
+        validate_move_request(old_issue.project_id, payload.destination_project_id)
+    {
+        return Err(ErrorResponse::new(
+            StatusCode::BAD_REQUEST,
+            "destination must differ from source",
+        ));
+    }
+
+    // 3. Authz on BOTH projects; both must be in the same org.
+    let src_org = ensure_project_access(state.pool(), ctx.user.id, old_issue.project_id).await?;
+    let dst_org =
+        ensure_project_access(state.pool(), ctx.user.id, payload.destination_project_id).await?;
+    if src_org != dst_org {
+        return Err(ErrorResponse::new(
+            StatusCode::FORBIDDEN,
+            "cross-org move not supported",
+        ));
+    }
+
+    // 4. Single transaction.
+    let mut tx = crate::db::begin_tx(state.pool()).await.map_err(|error| {
+        tracing::error!(?error, "failed to begin transaction");
+        ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+    })?;
+
+    let new_issue = IssueRepository::move_to_project(
+        &mut *tx,
+        issue_id,
+        payload.destination_project_id,
+        payload.destination_status_id,
+    )
+    .await
+    .map_err(|error| match error {
+        IssueError::InvalidDestinationStatus(_) => {
+            ErrorResponse::new(StatusCode::BAD_REQUEST, "invalid destination status")
+        }
+        IssueError::DestinationProjectNotFound(_) => {
+            ErrorResponse::new(StatusCode::NOT_FOUND, "destination project not found")
+        }
+        other => {
+            tracing::error!(?other, "failed to move issue");
+            ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "failed to move issue")
+        }
+    })?;
+
+    let txid = get_txid(&mut *tx).await.map_err(|error| {
+        tracing::error!(?error, "failed to get txid");
+        ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+    })?;
+
+    tx.commit().await.map_err(|error| {
+        tracing::error!(?error, "failed to commit transaction");
+        ErrorResponse::new(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+    })?;
+
+    // 5. Notify subscribers via the existing path.
+    notify_issue_update_changes(&state, dst_org, ctx.user.id, &old_issue, &new_issue).await;
+
+    Ok(Json(MutationResponse {
+        data: new_issue,
+        txid,
+    }))
+}
+
 /// Router for issue endpoints including bulk update
 pub fn router() -> axum::Router<AppState> {
     mutation()
         .router()
         .route("/issues/search", post(search_issues))
         .route("/issues/bulk", post(bulk_update_issues))
+        .route("/issues/{id}/move", post(move_issue))
 }
 
 async fn notify_issue_update_changes(
