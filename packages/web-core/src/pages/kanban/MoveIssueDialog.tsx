@@ -80,6 +80,16 @@ export function MoveIssueDialog({ issue, open, onClose }: MoveIssueDialogProps) 
     [statusesQuery.data]
   );
 
+  // Auto-select the first eligible status once the query resolves, so the
+  // user only has to click Move once after picking a project. They can still
+  // change the status before submitting.
+  useEffect(() => {
+    if (!destProjectId) return;
+    if (destStatusId) return;
+    const first = eligibleStatuses[0];
+    if (first) setDestStatusId(first.id);
+  }, [destProjectId, destStatusId, eligibleStatuses]);
+
   const canSubmit =
     !!destProjectId &&
     !!destStatusId &&
