@@ -538,7 +538,8 @@ impl IssueRepository {
     /// Operations performed (in order):
     /// 1. Validates `destination_status_id` belongs to `destination_project_id`
     ///    and is not hidden.
-    /// 2. Atomically bumps the destination project's `issue_counter` and
+    /// 2. Atomically bumps the destination project's organization's
+    ///    `issue_counter` (counters are org-scoped, not project-scoped) and
     ///    composes the new `simple_id` from the org's `issue_prefix`.
     /// 3. Picks `sort_order = COALESCE(MAX(sort_order),0) + 1.0` for the
     ///    destination's status-scoped Kanban column.
