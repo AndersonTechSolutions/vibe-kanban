@@ -7,12 +7,12 @@ use api_types::{
     CreateProjectRequest, CreateProjectStatusRequest, CreatePullRequestIssueRequest,
     CreateTagRequest, ExportRequest, Issue, IssueAssignee, IssueComment, IssueCommentReaction,
     IssueFollower, IssuePriority, IssueRelationship, IssueRelationshipType, IssueSortField,
-    IssueTag, ListIssuesQuery, ListIssuesResponse, MemberRole, Notification, NotificationGroupKind,
-    NotificationPayload, NotificationType, OrganizationMember, Project, ProjectStatus, PullRequest,
-    PullRequestIssue, PullRequestStatus, SearchIssuesRequest, SortDirection, Tag,
-    UpdateIssueCommentReactionRequest, UpdateIssueCommentRequest, UpdateIssueRequest,
-    UpdateNotificationRequest, UpdateProjectRequest, UpdateProjectStatusRequest, UpdateTagRequest,
-    User, UserData, Workspace,
+    IssueTag, ListIssuesQuery, ListIssuesResponse, MemberRole, MoveIssueRequest, Notification,
+    NotificationGroupKind, NotificationPayload, NotificationType, OrganizationMember, Project,
+    ProjectStatus, PullRequest, PullRequestIssue, PullRequestStatus, SearchIssuesRequest,
+    SortDirection, Tag, UpdateIssueCommentReactionRequest, UpdateIssueCommentRequest,
+    UpdateIssueRequest, UpdateNotificationRequest, UpdateProjectRequest, UpdateProjectStatusRequest,
+    UpdateTagRequest, User, UserData, Workspace,
 };
 use relay_types::{CreateRemoteSessionResponse, ListRelayHostsResponse, RelayHost};
 use remote::{
@@ -119,6 +119,7 @@ fn export_shapes() -> String {
         UpdateProjectStatusRequest::decl(),
         CreateIssueRequest::decl(),
         UpdateIssueRequest::decl(),
+        MoveIssueRequest::decl(),
         CreateIssueAssigneeRequest::decl(),
         CreateIssueFollowerRequest::decl(),
         CreateIssueTagRequest::decl(),

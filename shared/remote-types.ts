@@ -119,6 +119,8 @@ id?: string, project_id: string, status_id: string, title: string, description: 
 
 export type UpdateIssueRequest = { status_id?: string | null, title?: string | null, description?: string | null | null, priority?: IssuePriority | null | null, start_date?: string | null | null, target_date?: string | null | null, completed_at?: string | null | null, sort_order?: number | null, parent_issue_id?: string | null | null, parent_issue_sort_order?: number | null | null, extension_metadata?: JsonValue | null, };
 
+export type MoveIssueRequest = { destination_project_id: string, destination_status_id: string, };
+
 export type CreateIssueAssigneeRequest = { 
 /**
  * Optional client-generated ID. If not provided, server generates one.
