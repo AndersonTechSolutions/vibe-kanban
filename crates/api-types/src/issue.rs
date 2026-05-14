@@ -202,3 +202,15 @@ pub struct ListIssuesResponse {
     pub limit: usize,
     pub offset: usize,
 }
+
+/// Request body for `POST /api/issues/:id/move`.
+///
+/// `destination_project_id` and `destination_status_id` are both required; the
+/// server validates that the status belongs to the destination project, that
+/// both projects are in the same organization, and that the user has access
+/// to both projects.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+pub struct MoveIssueRequest {
+    pub destination_project_id: Uuid,
+    pub destination_status_id: Uuid,
+}
