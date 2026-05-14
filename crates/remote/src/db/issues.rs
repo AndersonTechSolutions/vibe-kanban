@@ -29,6 +29,27 @@ pub enum IssueError {
 
 pub struct IssueRepository;
 
+/// Pure validation errors for `IssueRepository::move_to_project` callers.
+/// These are surfaced to the route layer and mapped to specific HTTP status
+/// codes; they never indicate a DB failure.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum MoveValidationError {
+    #[error("destination must differ from source")]
+    SameDestination,
+}
+
+/// Pre-flight validation that does not touch the database. Used by the
+/// route handler before opening a transaction.
+pub fn validate_move_request(
+    source_project_id: Uuid,
+    destination_project_id: Uuid,
+) -> Result<(), MoveValidationError> {
+    if source_project_id == destination_project_id {
+        return Err(MoveValidationError::SameDestination);
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IssueWorkflowSignal {
     ReviewStarted,
@@ -701,5 +722,19 @@ mod tests {
             IssueRepository::escape_like_pattern(r"100%_done\ish"),
             r"100\%\_done\\ish"
         );
+    }
+
+    #[test]
+    fn validate_move_request_rejects_same_destination() {
+        let same = uuid::Uuid::new_v4();
+        let err = super::validate_move_request(same, same).unwrap_err();
+        assert!(matches!(err, super::MoveValidationError::SameDestination));
+    }
+
+    #[test]
+    fn validate_move_request_accepts_different_projects() {
+        let a = uuid::Uuid::new_v4();
+        let b = uuid::Uuid::new_v4();
+        super::validate_move_request(a, b).expect("should accept different projects");
     }
 }
