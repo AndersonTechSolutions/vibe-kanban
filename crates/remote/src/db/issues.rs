@@ -546,7 +546,12 @@ impl IssueRepository {
     /// 4. Upserts source-project tags into the destination project by name
     ///    (`ON CONFLICT (project_id, name) DO NOTHING` — existing dest color
     ///    wins), then rewrites `issue_tags` to point at destination tag ids.
-    /// 5. `UPDATE issues SET project_id, status_id, issue_number, simple_id,
+    /// 5. Re-scopes workspaces linked to this issue (`workspaces.issue_id`)
+    ///    to the destination project by updating their `project_id`. Without
+    ///    this, the kanban's PROJECT_WORKSPACES_SHAPE on the destination
+    ///    wouldn't include the moved issue's workspaces — they'd appear to
+    ///    be "dropped" from the move.
+    /// 6. `UPDATE issues SET project_id, status_id, issue_number, simple_id,
     ///    sort_order, updated_at = NOW() WHERE id = $issue_id` and returns
     ///    the fresh row.
     ///
@@ -678,7 +683,27 @@ impl IssueRepository {
             .await?;
         }
 
-        // 5. Final UPDATE of the issues row.
+        // 5. Re-scope any workspaces linked to this issue to the destination
+        //    project. workspaces.project_id is FK ON DELETE CASCADE; it is the
+        //    field used by PROJECT_WORKSPACES_SHAPE filtering, so without
+        //    this update the moved issue's workspaces would silently
+        //    disappear from the destination kanban (they'd still exist in
+        //    the DB but only be visible from the source project's shape).
+        //    workspaces.issue_id is unchanged — the issue↔workspace link
+        //    survives the move.
+        sqlx::query!(
+            r#"
+            UPDATE workspaces
+            SET project_id = $1, updated_at = NOW()
+            WHERE issue_id = $2
+            "#,
+            destination_project_id,
+            issue_id,
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        // 6. Final UPDATE of the issues row.
         let updated = sqlx::query_as!(
             Issue,
             r#"

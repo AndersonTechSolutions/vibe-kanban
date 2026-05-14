@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            UPDATE workspaces\n            SET project_id = $1, updated_at = NOW()\n            WHERE issue_id = $2\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "16609674eab9ba86797d3396176e767f0d3087c3ad6923727bb996d774e7cb58"
+}
