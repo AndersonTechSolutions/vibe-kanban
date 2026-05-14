@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH proj AS (\n                SELECT organization_id FROM projects WHERE id = $1\n            ),\n            bumped AS (\n                UPDATE organizations\n                SET issue_counter = issue_counter + 1\n                WHERE id = (SELECT organization_id FROM proj)\n                RETURNING issue_counter, issue_prefix\n            )\n            SELECT\n                bumped.issue_counter AS \"issue_counter!\",\n                bumped.issue_prefix  AS \"issue_prefix!\"\n            FROM bumped\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "issue_counter!",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "issue_prefix!",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "ea8ff426dffa2ed02b2b3b057cc6b26533652b2a6d0911aea17632b2de4e07c3"
+}

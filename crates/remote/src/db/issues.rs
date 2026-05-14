@@ -25,6 +25,10 @@ pub enum IssueError {
     Workspace(#[from] super::workspaces::WorkspaceError),
     #[error("issue assignee error: {0}")]
     IssueAssignee(#[from] super::issue_assignees::IssueAssigneeError),
+    #[error("invalid destination status: {0}")]
+    InvalidDestinationStatus(Uuid),
+    #[error("destination project not found: {0}")]
+    DestinationProjectNotFound(Uuid),
 }
 
 pub struct IssueRepository;
@@ -523,6 +527,199 @@ impl IssueRepository {
         .await?;
 
         Ok(data)
+    }
+
+    /// Move an issue to a different project within the same organization.
+    ///
+    /// All operations execute on the caller-supplied `tx` connection; atomicity
+    /// is guaranteed only if the caller opened a transaction before invoking
+    /// this method. The method itself does not call `BEGIN` or `COMMIT`.
+    ///
+    /// Operations performed (in order):
+    /// 1. Validates `destination_status_id` belongs to `destination_project_id`
+    ///    and is not hidden.
+    /// 2. Atomically bumps the destination project's `issue_counter` and
+    ///    composes the new `simple_id` from the org's `issue_prefix`.
+    /// 3. Picks `sort_order = COALESCE(MAX(sort_order),0) + 1.0` for the
+    ///    destination's status-scoped Kanban column.
+    /// 4. Upserts source-project tags into the destination project by name
+    ///    (`ON CONFLICT (project_id, name) DO NOTHING` — existing dest color
+    ///    wins), then rewrites `issue_tags` to point at destination tag ids.
+    /// 5. `UPDATE issues SET project_id, status_id, issue_number, simple_id,
+    ///    sort_order, updated_at = NOW() WHERE id = $issue_id` and returns
+    ///    the fresh row.
+    ///
+    /// The route layer is responsible for authz (`ensure_project_access` on
+    /// both source and destination) and the same-org / same-destination
+    /// pre-flight checks. `find_by_id` is used to fetch the source `Issue`
+    /// before this call so the caller has the `old_issue` value needed for
+    /// `notify_issue_update_changes`.
+    pub async fn move_to_project(
+        tx: &mut sqlx::PgConnection,
+        issue_id: Uuid,
+        destination_project_id: Uuid,
+        destination_status_id: Uuid,
+    ) -> Result<Issue, IssueError> {
+        // 1. Validate destination status belongs to destination project and isn't hidden.
+        let status_ok = sqlx::query_scalar!(
+            r#"
+            SELECT EXISTS (
+                SELECT 1 FROM project_statuses
+                WHERE id = $1 AND project_id = $2 AND hidden = false
+            ) AS "exists!"
+            "#,
+            destination_status_id,
+            destination_project_id,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+        if !status_ok {
+            return Err(IssueError::InvalidDestinationStatus(destination_status_id));
+        }
+
+        // 2. Atomically bump the org's issue_counter (shared across all projects in the org)
+        //    and read the org's issue_prefix. The counter lives on organizations, not projects,
+        //    per migration 20260313000000_fix-short-id-counter.sql.
+        let bumped = sqlx::query!(
+            r#"
+            WITH proj AS (
+                SELECT organization_id FROM projects WHERE id = $1
+            ),
+            bumped AS (
+                UPDATE organizations
+                SET issue_counter = issue_counter + 1
+                WHERE id = (SELECT organization_id FROM proj)
+                RETURNING issue_counter, issue_prefix
+            )
+            SELECT
+                bumped.issue_counter AS "issue_counter!",
+                bumped.issue_prefix  AS "issue_prefix!"
+            FROM bumped
+            "#,
+            destination_project_id,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        let bumped = bumped
+            .ok_or(IssueError::DestinationProjectNotFound(destination_project_id))?;
+        let new_issue_number = bumped.issue_counter;
+        let new_simple_id = format!("{}-{}", bumped.issue_prefix, new_issue_number);
+
+        // 3. Compute bottom-of-column sort_order in destination, status-scoped.
+        let new_sort_order: f64 = sqlx::query_scalar!(
+            r#"
+            SELECT COALESCE(MAX(sort_order), 0) + 1.0 AS "next!"
+            FROM issues
+            WHERE project_id = $1 AND status_id = $2
+            "#,
+            destination_project_id,
+            destination_status_id,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+
+        // 4. Tag preservation.
+        let source_tags = sqlx::query!(
+            r#"
+            SELECT t.name AS "name!", t.color AS "color!"
+            FROM tags t
+            JOIN issue_tags it ON it.tag_id = t.id
+            WHERE it.issue_id = $1
+            "#,
+            issue_id,
+        )
+        .fetch_all(&mut *tx)
+        .await?;
+
+        sqlx::query!(
+            "DELETE FROM issue_tags WHERE issue_id = $1",
+            issue_id,
+        )
+        .execute(&mut *tx)
+        .await?;
+
+        for src in &source_tags {
+            sqlx::query!(
+                r#"
+                INSERT INTO tags (project_id, name, color)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (project_id, name) DO NOTHING
+                "#,
+                destination_project_id,
+                src.name,
+                src.color,
+            )
+            .execute(&mut *tx)
+            .await?;
+
+            let dest_tag_id: Uuid = sqlx::query_scalar!(
+                r#"
+                SELECT id AS "id!: Uuid"
+                FROM tags
+                WHERE project_id = $1 AND name = $2
+                "#,
+                destination_project_id,
+                src.name,
+            )
+            .fetch_one(&mut *tx)
+            .await?;
+
+            sqlx::query!(
+                r#"
+                INSERT INTO issue_tags (issue_id, tag_id)
+                VALUES ($1, $2)
+                ON CONFLICT (issue_id, tag_id) DO NOTHING
+                "#,
+                issue_id,
+                dest_tag_id,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        // 5. Final UPDATE of the issues row.
+        let updated = sqlx::query_as!(
+            Issue,
+            r#"
+            UPDATE issues
+            SET project_id   = $2,
+                status_id    = $3,
+                issue_number = $4,
+                simple_id    = $5,
+                sort_order   = $6,
+                updated_at   = NOW()
+            WHERE id = $1
+            RETURNING
+                id                       AS "id!: Uuid",
+                project_id               AS "project_id!: Uuid",
+                issue_number             AS "issue_number!",
+                simple_id                AS "simple_id!",
+                status_id                AS "status_id!: Uuid",
+                title                    AS "title!",
+                description              AS "description?",
+                priority                 AS "priority: IssuePriority",
+                start_date               AS "start_date?: DateTime<Utc>",
+                target_date              AS "target_date?: DateTime<Utc>",
+                completed_at             AS "completed_at?: DateTime<Utc>",
+                sort_order               AS "sort_order!",
+                parent_issue_id          AS "parent_issue_id?: Uuid",
+                parent_issue_sort_order  AS "parent_issue_sort_order?",
+                extension_metadata       AS "extension_metadata!: Value",
+                creator_user_id          AS "creator_user_id?: Uuid",
+                created_at               AS "created_at!: DateTime<Utc>",
+                updated_at               AS "updated_at!: DateTime<Utc>"
+            "#,
+            issue_id,
+            destination_project_id,
+            destination_status_id,
+            new_issue_number,
+            new_simple_id,
+            new_sort_order,
+        )
+        .fetch_one(&mut *tx)
+        .await?;
+
+        Ok(updated)
     }
 
     pub async fn delete(pool: &PgPool, id: Uuid) -> Result<DeleteResponse, IssueError> {
