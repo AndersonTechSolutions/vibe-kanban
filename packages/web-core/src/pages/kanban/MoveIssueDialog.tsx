@@ -23,7 +23,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@vibe/ui/components/Select';
-import { useOrgContext } from '@/shared/hooks/useOrgContext';
+import { useOrganizationStore } from '@/shared/stores/useOrganizationStore';
+import { useOrganizationProjects } from '@/shared/hooks/useOrganizationProjects';
 import { moveIssue, makeRequest } from '@/shared/lib/remoteApi';
 import type { Issue, ProjectStatus } from 'shared/remote-types';
 
@@ -35,12 +36,21 @@ export interface MoveIssueDialogProps {
 
 export function MoveIssueDialog({ issue, open, onClose }: MoveIssueDialogProps) {
   const navigate = useNavigate();
-  const orgContext = useOrgContext();
 
-  // 1. Same-org projects, excluding source.
+  // Source the org's projects directly from the org store + a TanStack
+  // query, NOT from useOrgContext — the dialog is rendered by
+  // @ebay/nice-modal-react's Provider which is mounted above OrgProvider in
+  // the React tree (see __root.tsx). Calling useOrgContext here throws
+  // "useOrgContext must be used within an OrgProvider". The store + query
+  // pair has no such requirement and is the pattern AssigneeSelectionDialog
+  // already uses for the same reason.
+  const selectedOrgId = useOrganizationStore((s) => s.selectedOrgId);
+  const { data: allProjects = [] } = useOrganizationProjects(selectedOrgId);
+
+  // Same-org projects, excluding source.
   const projects = useMemo(
-    () => orgContext.projects.filter((p) => p.id !== issue.project_id),
-    [orgContext.projects, issue.project_id]
+    () => allProjects.filter((p) => p.id !== issue.project_id),
+    [allProjects, issue.project_id]
   );
 
   const [destProjectId, setDestProjectId] = useState<string | null>(null);
