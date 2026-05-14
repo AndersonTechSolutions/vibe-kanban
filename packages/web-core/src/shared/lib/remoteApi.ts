@@ -137,6 +137,40 @@ export async function bulkUpdateIssues(
   }
 }
 
+export interface MoveIssueParams {
+  issueId: string;
+  destinationProjectId: string;
+  destinationStatusId: string;
+}
+
+/**
+ * Move an issue to a different project in the same organization. Server
+ * resolves the new `simple_id` (atomic counter bump on destination), reassigns
+ * tags by name (auto-creating missing ones in destination), and places the
+ * issue at the bottom of the destination's status-scoped column.
+ */
+export async function moveIssue(params: MoveIssueParams): Promise<void> {
+  const response = await makeRequest(`/v1/issues/${params.issueId}/move`, {
+    method: 'POST',
+    body: JSON.stringify({
+      destination_project_id: params.destinationProjectId,
+      destination_status_id: params.destinationStatusId,
+    }),
+  });
+  if (!response.ok) {
+    let message = 'Failed to move issue';
+    try {
+      const error = await response.json();
+      if (error && typeof error.message === 'string') {
+        message = error.message;
+      }
+    } catch {
+      // ignore JSON parse errors
+    }
+    throw new Error(message);
+  }
+}
+
 export interface BulkUpdateProjectStatusItem {
   id: string;
   changes: Partial<UpdateProjectStatusRequest>;
