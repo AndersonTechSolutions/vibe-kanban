@@ -6,7 +6,7 @@ import type {
   Workspace,
   PatchType,
 } from 'shared/types';
-import type { Workspace as RemoteWorkspace } from 'shared/remote-types';
+import type { Issue, Workspace as RemoteWorkspace } from 'shared/remote-types';
 import type { DiffViewMode } from '@/shared/stores/useDiffViewStore';
 import type { LayoutMode } from '@/shared/stores/useUiPreferencesStore';
 import { RIGHT_MAIN_PANEL_MODES } from '@/shared/stores/useUiPreferencesStore';
@@ -41,7 +41,7 @@ export type DevServerState = 'stopped' | 'starting' | 'running' | 'stopping';
 export interface ProjectMutations {
   removeIssue: (id: string) => void;
   duplicateIssue: (issueId: string) => void;
-  getIssue: (issueId: string) => { simple_id: string } | undefined;
+  getIssue: (issueId: string) => Issue | undefined;
   getAssigneesForIssue: (issueId: string) => { user_id: string }[];
 }
 

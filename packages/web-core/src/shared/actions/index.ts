@@ -1439,6 +1439,30 @@ export const Actions = {
     },
   } satisfies IssueActionDefinition,
 
+  MoveIssue: {
+    id: 'move-issue',
+    label: 'Move to project…',
+    icon: ArrowsLeftRightIcon,
+    shortcut: 'I M',
+    requiresTarget: ActionTargetType.ISSUE,
+    isVisible: (ctx) =>
+      ctx.layoutMode === 'kanban' && ctx.hasSelectedKanbanIssue,
+    execute: async (ctx, _projectId, issueIds) => {
+      if (issueIds.length !== 1) {
+        throw new Error('Can only move one issue at a time');
+      }
+      const issueId = issueIds[0];
+      const issue = ctx.projectMutations?.getIssue?.(issueId);
+      if (!issue) {
+        throw new Error('Issue not found');
+      }
+      const { showMoveIssueDialog } = await import(
+        '@/pages/kanban/showMoveIssueDialog'
+      );
+      await showMoveIssueDialog({ issue });
+    },
+  } satisfies IssueActionDefinition,
+
   DuplicateIssue: {
     id: 'duplicate-issue',
     label: 'Duplicate Issue',
