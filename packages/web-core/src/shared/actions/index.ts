@@ -44,6 +44,7 @@ import {
   LinkIcon,
   ArrowBendUpRightIcon,
   ProhibitIcon,
+  ArrowSquareOutIcon,
 } from '@phosphor-icons/react';
 import { useDiffViewStore } from '@/shared/stores/useDiffViewStore';
 import { useWorkspaceDiffStore } from '@/shared/stores/useWorkspaceDiffStore';
@@ -764,6 +765,36 @@ export const Actions = {
         EditorSelectionDialog.show({
           selectedAttemptId: ctx.currentWorkspaceId,
         });
+      }
+    },
+  },
+
+  OpenWorkspaceInNewWindow: {
+    id: 'open-workspace-in-new-window',
+    label: 'Open in new window',
+    icon: ArrowSquareOutIcon,
+    requiresTarget: ActionTargetType.NONE,
+    isVisible: (ctx) =>
+      ctx.hasWorkspace &&
+      // The /workspaces/:id/popout route only exists in the local-web bundle.
+      ctx.appRuntime === 'local' &&
+      // Suppress inside the popout window itself — popping a popout is a no-op.
+      (typeof window === 'undefined' ||
+        !window.location.pathname.endsWith('/popout')),
+    getTooltip: () => 'Open this workspace in its own window',
+    execute: async (ctx) => {
+      if (!ctx.currentWorkspaceId) return;
+      // Named target keeps single-instance focus per workspace: a second
+      // click on the same workspace's pop-out reuses the existing window.
+      const win = window.open(
+        `/workspaces/${ctx.currentWorkspaceId}/popout`,
+        `vk-workspace-${ctx.currentWorkspaceId}`,
+        'popup=yes'
+      );
+      if (win) {
+        // Some browsers (notably standalone-mode PWAs on certain platforms)
+        // do not auto-raise an existing named-target window — focus explicitly.
+        win.focus();
       }
     },
   },
@@ -1580,7 +1611,11 @@ export const NavbarActionGroups = {
 
 // ContextBar action groups define which actions appear in each section
 export const ContextBarActionGroups = {
-  primary: [Actions.OpenInIDE, Actions.CopyWorkspacePath] as ActionDefinition[],
+  primary: [
+    Actions.OpenInIDE,
+    Actions.OpenWorkspaceInNewWindow,
+    Actions.CopyWorkspacePath,
+  ] as ActionDefinition[],
   secondary: [
     Actions.ToggleDevServer,
     Actions.TogglePreviewMode,

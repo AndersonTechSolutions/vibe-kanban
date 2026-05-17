@@ -1,5 +1,9 @@
 import { WorkspacesLayout } from './WorkspacesLayout';
 
-export function Workspaces() {
-  return <WorkspacesLayout />;
+interface WorkspacesProps {
+  popout?: boolean;
+}
+
+export function Workspaces({ popout = false }: WorkspacesProps = {}) {
+  return <WorkspacesLayout popout={popout} />;
 }

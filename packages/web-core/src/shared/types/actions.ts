@@ -148,6 +148,10 @@ export interface ActionVisibilityContext {
 
   // Auth state
   isSignedIn: boolean;
+
+  // App runtime (local PWA vs cloud-deployed UI). Used by visibility checks
+  // for actions whose target route exists in only one bundle.
+  appRuntime: AppRuntime;
 }
 
 // Enum discriminant for action target types
