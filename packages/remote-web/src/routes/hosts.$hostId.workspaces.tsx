@@ -1,6 +1,8 @@
 import { useState } from "react";
 import {
   createFileRoute,
+  Outlet,
+  useLocation,
   useNavigate,
   useParams,
 } from "@tanstack/react-router";
@@ -35,7 +37,13 @@ export const Route = createFileRoute("/hosts/$hostId/workspaces")({
 });
 
 function WorkspacesRouteComponent() {
+  const location = useLocation();
   const isMobile = useIsMobile();
+
+  if (location.pathname.endsWith("/popout")) {
+    return <Outlet />;
+  }
+
   return (
     <RemoteWorkspacesPageShell>
       {isMobile ? <MobileWorkspacesList /> : <WorkspacesLanding />}
