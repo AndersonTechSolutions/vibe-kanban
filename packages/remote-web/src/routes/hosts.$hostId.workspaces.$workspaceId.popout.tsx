@@ -1,10 +1,7 @@
 import { type ReactNode } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useParams } from "@tanstack/react-router";
 import { Provider as NiceModalProvider } from "@ebay/nice-modal-react";
 import { requireAuthenticated } from "@remote/shared/lib/route-auth";
-import { SequenceTrackerProvider } from "@/shared/keyboard/SequenceTracker";
-import { SequenceIndicator } from "@/shared/keyboard/SequenceIndicator";
-import { useWorkspaceShortcuts } from "@/shared/keyboard/useWorkspaceShortcuts";
 import { useKeyShowHelp, Scope } from "@/shared/keyboard";
 import { KeyboardShortcutsDialog } from "@/shared/dialogs/shared/KeyboardShortcutsDialog";
 import { TerminalProvider } from "@/shared/providers/TerminalProvider";
@@ -14,16 +11,16 @@ import { LogsPanelProvider } from "@/shared/providers/LogsPanelProvider";
 import { ActionsProvider } from "@/shared/providers/ActionsProvider";
 import { useWorkspaceContext } from "@/shared/hooks/useWorkspaceContext";
 import { Workspaces } from "@/pages/workspaces/Workspaces";
-import { RemoteWorkspacesPageShell } from "@remote/pages/RemoteWorkspacesPageShell";
+import WorkspacesUnavailablePage from "@remote/pages/WorkspacesUnavailablePage";
+import { useRelayWorkspaceHostHealth } from "@remote/shared/hooks/useRelayWorkspaceHostHealth";
 
-function KeyboardShortcutsHandler() {
+function GlobalKeyboardShortcuts() {
   useKeyShowHelp(
     () => {
       KeyboardShortcutsDialog.show();
     },
     { scope: Scope.GLOBAL },
   );
-  useWorkspaceShortcuts();
   return null;
 }
 
@@ -57,17 +54,44 @@ function PopoutProviders({ children }: { children: ReactNode }) {
 }
 
 function PopoutRouteComponent() {
+  // Inline the host-health gate from RemoteWorkspacesPageShell, but skip
+  // its WorkspaceTitleSync child component — that component reads the
+  // workspace context via a hook that React Forget-memoizes, and re-renders
+  // triggered by external subscriptions race the provider tree on first
+  // popout-window mount. The popout doesn't need mobile title sync anyway
+  // (WorkspacesLayout already calls usePageTitle).
+  const { hostId } = useParams({ strict: false });
+  const hostHealth = useRelayWorkspaceHostHealth(hostId ?? null);
+
+  if (!hostId) {
+    return <WorkspacesUnavailablePage />;
+  }
+  if (hostHealth.isChecking) {
+    return (
+      <WorkspacesUnavailablePage
+        blockedHost={{ id: hostId, name: null }}
+        isCheckingBlockedHost
+      />
+    );
+  }
+  if (hostHealth.isError) {
+    return (
+      <WorkspacesUnavailablePage
+        blockedHost={{
+          id: hostId,
+          name: null,
+          errorMessage: hostHealth.errorMessage,
+        }}
+      />
+    );
+  }
+
   return (
     <PopoutProviders>
-      <SequenceTrackerProvider>
-        <SequenceIndicator />
-        <KeyboardShortcutsHandler />
-        <RemoteWorkspacesPageShell>
-          <div className="h-screen flex flex-col bg-primary">
-            <Workspaces popout />
-          </div>
-        </RemoteWorkspacesPageShell>
-      </SequenceTrackerProvider>
+      <GlobalKeyboardShortcuts />
+      <div className="h-screen flex flex-col bg-primary">
+        <Workspaces popout />
+      </div>
     </PopoutProviders>
   );
 }
