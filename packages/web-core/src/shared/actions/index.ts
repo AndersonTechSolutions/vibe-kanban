@@ -785,9 +785,19 @@ export const Actions = {
       // The popout route lives at a different path in each bundle. Local-web
       // is single-host so the URL doesn't carry a host id; remote-web is
       // multi-host and embeds the host id in the path.
+      //
+      // In remote-web, `ctx.currentHostId` is not populated (HostIdProvider
+      // is local-web only), so derive hostId from the current URL prefix
+      // — the user always reaches a per-workspace ContextBar via a route
+      // that already encodes hostId (e.g. /hosts/<id>/workspaces_/<wsId>).
+      const hostIdFromUrl =
+        typeof window !== 'undefined'
+          ? (window.location.pathname.match(/^\/hosts\/([^/]+)\//)?.[1] ?? null)
+          : null;
+      const hostId = ctx.currentHostId ?? hostIdFromUrl;
       const url =
-        ctx.appRuntime === 'remote' && ctx.currentHostId
-          ? `/hosts/${ctx.currentHostId}/workspaces/${ctx.currentWorkspaceId}/popout`
+        ctx.appRuntime === 'remote' && hostId
+          ? `/hosts/${hostId}/workspaces/${ctx.currentWorkspaceId}/popout`
           : `/workspaces/${ctx.currentWorkspaceId}/popout`;
       // Named target keeps single-instance focus per workspace: a second
       // click on the same workspace's pop-out reuses the existing window.
