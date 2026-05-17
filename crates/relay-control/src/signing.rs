@@ -10,7 +10,11 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
-use tokio::sync::{RwLock, RwLockMappedWriteGuard, RwLockWriteGuard};
+use tokio::{
+    sync::{RwLock, RwLockMappedWriteGuard, RwLockWriteGuard},
+    task::JoinHandle,
+    time::MissedTickBehavior,
+};
 use uuid::Uuid;
 
 // ---------------------------------------------------------------------------
@@ -124,6 +128,11 @@ const RELAY_SIGNATURE_MAX_TIMESTAMP_DRIFT_SECS: i64 = 30;
 const RELAY_SIGNING_SESSION_TTL: Duration = Duration::from_secs(60 * 60);
 const RELAY_SIGNING_SESSION_IDLE_TTL: Duration = Duration::from_secs(15 * 60);
 const RELAY_NONCE_TTL: Duration = Duration::from_secs(2 * 60);
+
+/// How often the background eviction task sweeps expired sessions and
+/// per-session nonces. Independent of `verify_request` arrivals so idle
+/// hosts still bound their memory.
+const RELAY_SIGNING_EVICTION_INTERVAL: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct RelaySigningService {
@@ -302,6 +311,92 @@ impl RelaySigningService {
         RwLockWriteGuard::try_map(sessions, |sessions| sessions.get_mut(&signing_session_id))
             .map_err(|_| RelaySignatureValidationError::MissingSigningSession)
     }
+
+    /// Run a single eviction pass: drop expired sessions and prune per-session
+    /// nonce caches older than `RELAY_NONCE_TTL`. Exposed for unit tests and
+    /// for callers that want to evict on demand; the periodic loop spawned by
+    /// `spawn_eviction_loop` calls this on a timer.
+    pub async fn run_eviction_pass(&self) -> EvictionStats {
+        let mut sessions = self.sessions.write().await;
+        let now = Instant::now();
+        let before = sessions.len();
+        sessions.retain(|_, session| {
+            now.duration_since(session.created_at) <= RELAY_SIGNING_SESSION_TTL
+                && now.duration_since(session.last_used_at) <= RELAY_SIGNING_SESSION_IDLE_TTL
+        });
+        let mut total_nonces = 0;
+        for session in sessions.values_mut() {
+            session
+                .seen_nonces
+                .retain(|_, seen_at| now.duration_since(*seen_at) <= RELAY_NONCE_TTL);
+            total_nonces += session.seen_nonces.len();
+        }
+        let after = sessions.len();
+        EvictionStats {
+            retained_sessions: after,
+            evicted_sessions: before.saturating_sub(after),
+            retained_nonces: total_nonces,
+        }
+    }
+
+    /// Spawn the background eviction loop. Idempotent in the sense that
+    /// `sessions` is `Arc`-shared, so multiple spawns coexist; production
+    /// callers should spawn exactly once at startup. The returned handle can
+    /// be detached (the loop runs for the process lifetime).
+    pub fn spawn_eviction_loop(&self) -> JoinHandle<()> {
+        let service = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(RELAY_SIGNING_EVICTION_INTERVAL);
+            ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            // First tick fires immediately; skip it so we don't sweep an
+            // empty service right after startup for nothing.
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                let stats = service.run_eviction_pass().await;
+                tracing::debug!(
+                    retained_sessions = stats.retained_sessions,
+                    evicted_sessions = stats.evicted_sessions,
+                    retained_nonces = stats.retained_nonces,
+                    "relay-signing eviction pass"
+                );
+            }
+        })
+    }
+
+    #[cfg(test)]
+    async fn register_session_with_age(
+        &self,
+        signing_session_id: Uuid,
+        peer_public_key: VerifyingKey,
+        age_from_now: Duration,
+    ) {
+        let now = Instant::now();
+        let backdated = now.checked_sub(age_from_now).unwrap_or(now);
+        self.sessions.write().await.insert(
+            signing_session_id,
+            RelaySigningSession {
+                peer_public_key,
+                created_at: backdated,
+                last_used_at: backdated,
+                seen_nonces: HashMap::new(),
+            },
+        );
+    }
+
+    #[cfg(test)]
+    async fn session_count(&self) -> usize {
+        self.sessions.read().await.len()
+    }
+}
+
+/// Result of one eviction pass. Used by the periodic loop's debug log and
+/// by unit tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EvictionStats {
+    pub retained_sessions: usize,
+    pub evicted_sessions: usize,
+    pub retained_nonces: usize,
 }
 
 fn validate_timestamp(timestamp: i64) -> Result<(), RelaySignatureValidationError> {
@@ -325,4 +420,69 @@ fn parse_signature_b64(signature_b64: &str) -> Result<Signature, RelaySignatureV
         .decode(signature_b64)
         .map_err(|_| RelaySignatureValidationError::InvalidSignature)?;
     Signature::from_slice(&sig_bytes).map_err(|_| RelaySignatureValidationError::InvalidSignature)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fresh_service() -> RelaySigningService {
+        RelaySigningService::new(SigningKey::generate(&mut OsRng))
+    }
+
+    fn random_peer_key() -> VerifyingKey {
+        SigningKey::generate(&mut OsRng).verifying_key()
+    }
+
+    #[tokio::test]
+    async fn run_eviction_pass_drops_expired_sessions() {
+        let svc = fresh_service();
+        let expired_id = Uuid::new_v4();
+        let fresh_id = Uuid::new_v4();
+
+        // Backdate one session past the absolute TTL.
+        svc.register_session_with_age(
+            expired_id,
+            random_peer_key(),
+            RELAY_SIGNING_SESSION_TTL + Duration::from_secs(60),
+        )
+        .await;
+        // Another session is brand new.
+        svc.register_session(fresh_id, random_peer_key()).await;
+
+        assert_eq!(svc.session_count().await, 2);
+
+        let stats = svc.run_eviction_pass().await;
+        assert_eq!(stats.evicted_sessions, 1);
+        assert_eq!(stats.retained_sessions, 1);
+        assert_eq!(svc.session_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn run_eviction_pass_drops_idle_sessions() {
+        let svc = fresh_service();
+        let idle_id = Uuid::new_v4();
+        svc.register_session_with_age(
+            idle_id,
+            random_peer_key(),
+            RELAY_SIGNING_SESSION_IDLE_TTL + Duration::from_secs(30),
+        )
+        .await;
+        assert_eq!(svc.session_count().await, 1);
+        svc.run_eviction_pass().await;
+        assert_eq!(
+            svc.session_count().await,
+            0,
+            "idle session should be evicted by the time-based sweep"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_eviction_pass_is_safe_when_empty() {
+        let svc = fresh_service();
+        let stats = svc.run_eviction_pass().await;
+        assert_eq!(stats.evicted_sessions, 0);
+        assert_eq!(stats.retained_sessions, 0);
+        assert_eq!(stats.retained_nonces, 0);
+    }
 }

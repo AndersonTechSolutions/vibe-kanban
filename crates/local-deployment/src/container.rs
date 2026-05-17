@@ -128,6 +128,7 @@ impl LocalContainerService {
         };
 
         container.spawn_workspace_cleanup();
+        container.spawn_msg_stores_janitor();
 
         container
     }
@@ -317,6 +318,97 @@ impl LocalContainerService {
                     });
             }
         });
+    }
+
+    /// Background reconciliation between the in-memory `msg_stores` map and
+    /// the `execution_processes` table. Defense in depth on top of the
+    /// `spawn_exit_monitor` cleanup path — if an executor process hangs
+    /// without exiting (e.g., waiting on stdin from a closed pipe) the
+    /// exit-monitor removal never fires, leaking the MsgStore. This task
+    /// catches those orphans.
+    fn spawn_msg_stores_janitor(&self) {
+        let container = self.clone();
+        tokio::spawn(async move {
+            // Wait one interval before the first sweep so we don't race
+            // against startup-time inserts that haven't been backed by a
+            // DB row yet.
+            let mut ticker =
+                tokio::time::interval(tokio::time::Duration::from_secs(5 * 60));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            ticker.tick().await; // skip the immediate first fire
+            loop {
+                ticker.tick().await;
+                let evicted = container.run_msg_stores_janitor_pass().await;
+                if evicted > 0 {
+                    tracing::debug!(evicted, "msg_stores janitor pass");
+                }
+            }
+        });
+    }
+
+    /// Single janitor pass: walk `msg_stores`, query each `exec_id`'s DB
+    /// row, and remove entries whose execution is in a terminal status and
+    /// has been done for longer than `JANITOR_GRACE`. Returns the number
+    /// removed for observability. Extracted from the loop so callers can
+    /// invoke it directly (e.g. for tests once container fixtures exist).
+    ///
+    /// Race condition note: both this pass and `spawn_exit_monitor` may
+    /// call `msg_stores.write().await.remove(&id)` for the same id. The
+    /// race is benign — one returns `Some`, the other returns `None`.
+    pub(crate) async fn run_msg_stores_janitor_pass(&self) -> usize {
+        const JANITOR_GRACE: chrono::Duration = chrono::Duration::minutes(5);
+        let candidates: Vec<Uuid> = {
+            let map = self.msg_stores.read().await;
+            map.keys().copied().collect()
+        };
+        if candidates.is_empty() {
+            return 0;
+        }
+        let now = chrono::Utc::now();
+        let mut to_evict: Vec<Uuid> = Vec::new();
+        for exec_id in candidates {
+            match db::models::execution_process::ExecutionProcess::find_by_id(
+                &self.db.pool,
+                exec_id,
+            )
+            .await
+            {
+                Ok(Some(ep))
+                    if matches!(
+                        ep.status,
+                        db::models::execution_process::ExecutionProcessStatus::Completed
+                            | db::models::execution_process::ExecutionProcessStatus::Failed
+                            | db::models::execution_process::ExecutionProcessStatus::Killed
+                    ) =>
+                {
+                    if let Some(completed_at) = ep.completed_at
+                        && now.signed_duration_since(completed_at) > JANITOR_GRACE
+                    {
+                        to_evict.push(exec_id);
+                    }
+                }
+                Ok(Some(_)) => { /* still running */ }
+                Ok(None) => {
+                    // DB row gone; treat as orphan and evict.
+                    to_evict.push(exec_id);
+                }
+                Err(e) => {
+                    tracing::warn!(?e, %exec_id, "msg_stores janitor: failed to load row");
+                }
+            }
+        }
+        let mut evicted = 0usize;
+        if !to_evict.is_empty() {
+            let mut map = self.msg_stores.write().await;
+            for exec_id in to_evict {
+                if let Some(store) = map.remove(&exec_id) {
+                    store.push_finished();
+                    tracing::debug!(%exec_id, reason = "janitor", "MsgStore removed");
+                    evicted += 1;
+                }
+            }
+        }
+        evicted
     }
 
     /// Record the current HEAD commit for each repository as the "after" state.
@@ -796,6 +888,7 @@ impl LocalContainerService {
             let db_stream_handle = container.take_db_stream_handle(&exec_id).await;
             if let Some(msg_arc) = msg_stores.write().await.remove(&exec_id) {
                 msg_arc.push_finished();
+                tracing::debug!(%exec_id, reason = "exit_monitor", "MsgStore removed");
             }
             if let Some(handle) = db_stream_handle {
                 let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
@@ -1460,6 +1553,7 @@ impl ContainerService for LocalContainerService {
         let db_stream_handle = self.take_db_stream_handle(&execution_process.id).await;
         if let Some(msg) = self.msg_stores.write().await.remove(&execution_process.id) {
             msg.push_finished();
+            tracing::debug!(exec_id = %execution_process.id, reason = "explicit_stop", "MsgStore removed");
         }
         if let Some(handle) = db_stream_handle {
             let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;

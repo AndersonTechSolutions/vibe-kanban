@@ -207,6 +207,10 @@ impl Deployment for LocalDeployment {
         let trusted_key_auth = TrustedKeyAuthRuntime::new(trusted_keys_path());
         let relay_signing = RelaySigningService::load_or_generate(&server_signing_key_path())
             .expect("Failed to load or generate server signing key");
+        // Bound the in-memory signing-session map with a periodic sweep so
+        // idle hosts evict expired sessions and per-session nonce caches
+        // instead of relying solely on incoming verify_request calls.
+        let _eviction_handle = relay_signing.spawn_eviction_loop();
         let relay_control = Arc::new(RelayControl::new());
         let client_info = ClientInfo::new();
         let preview_proxy = PreviewProxyService::new();
