@@ -776,18 +776,23 @@ export const Actions = {
     requiresTarget: ActionTargetType.NONE,
     isVisible: (ctx) =>
       ctx.hasWorkspace &&
-      // The /workspaces/:id/popout route only exists in the local-web bundle.
-      ctx.appRuntime === 'local' &&
       // Suppress inside the popout window itself — popping a popout is a no-op.
       (typeof window === 'undefined' ||
         !window.location.pathname.endsWith('/popout')),
     getTooltip: () => 'Open this workspace in its own window',
     execute: async (ctx) => {
       if (!ctx.currentWorkspaceId) return;
+      // The popout route lives at a different path in each bundle. Local-web
+      // is single-host so the URL doesn't carry a host id; remote-web is
+      // multi-host and embeds the host id in the path.
+      const url =
+        ctx.appRuntime === 'remote' && ctx.currentHostId
+          ? `/hosts/${ctx.currentHostId}/workspaces/${ctx.currentWorkspaceId}/popout`
+          : `/workspaces/${ctx.currentWorkspaceId}/popout`;
       // Named target keeps single-instance focus per workspace: a second
       // click on the same workspace's pop-out reuses the existing window.
       const win = window.open(
-        `/workspaces/${ctx.currentWorkspaceId}/popout`,
+        url,
         `vk-workspace-${ctx.currentWorkspaceId}`,
         'popup=yes'
       );

@@ -134,7 +134,10 @@ function RootLayout() {
   const isStandaloneRoute =
     location.pathname.startsWith("/account") ||
     location.pathname.startsWith("/login") ||
-    location.pathname.startsWith("/invitations");
+    location.pathname.startsWith("/invitations") ||
+    // Workspace popout windows manage their own provider stack and skip the
+    // RemoteAppShell so the OS window is dedicated to one workspace.
+    location.pathname.endsWith("/popout");
   const destination = resolveRemoteDestinationFromPath(location.pathname);
   const isWorkspaceProviderRoute =
     isProjectDestination(destination) || isWorkspacesDestination(destination);
