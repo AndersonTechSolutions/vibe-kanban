@@ -66,6 +66,9 @@ spake2 = { version = "0.5.0-pre.0", features = ["getrandom"] }
 sha2 = "0.10"
 ed25519-dalek = "2.2.0"
 tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+# Optional profiling allocator. Enabled only under the `mem-prof` cargo
+# feature so production builds keep the system allocator.
+tikv-jemallocator = { version = "0.6", features = ["profiling", "unprefixed_malloc_on_supported_platforms"], optional = true }
 
 [build-dependencies]
 dotenv = "0.15"
@@ -76,3 +79,8 @@ tempfile = "3"
 [features]
 default = []
 qa-mode = ["services/qa-mode", "executors/qa-mode"]
+# Build with jemalloc + heap-profiling support enabled. Use to attribute
+# residual memory growth (see Vibe Kanban Improvement OpenSpec change
+# diagnose-residual-memory-growth). Not for production builds — adds
+# ~5% runtime overhead and a non-trivial binary size increase.
+mem-prof = ["dep:tikv-jemallocator"]
