@@ -20,8 +20,8 @@ use ws_bridge::{bridge_tungstenite_ws, connect_upstream_ws};
 use crate::{
     WebRtcError, fragment,
     proxy::{
-        DataChannelMessage, DataChannelRequest, DataChannelResponse, DataChannelWsStream, WsError,
-        WsFrame, WsOpen, WsOpened,
+        DataChannelMessage, DataChannelRequest, DataChannelResponse, DataChannelWsStream, WsClose,
+        WsError, WsFrame, WsOpen, WsOpened,
     },
 };
 
@@ -412,14 +412,25 @@ async fn handle_ws_open(
         // Always clear the per-connection sender when the bridge task exits.
         ws_connections.lock().await.remove(&conn_id);
 
-        if let Err(e) = bridge_result {
-            let msg = DataChannelMessage::WsError(WsError {
+        // Always notify the client that the bridge has ended — either via
+        // WsClose (normal close) or WsError (failure). Without this, a
+        // clean upstream close leaves the emulated WebSocket on the
+        // browser side in an "open but silent" state: no `onclose` fires,
+        // `useJsonPatchWsStream` keeps `isConnected=true`, and the user
+        // never sees new live updates until a full page refresh.
+        let msg = match bridge_result {
+            Ok(()) => DataChannelMessage::WsClose(WsClose {
+                conn_id,
+                code: Some(1000),
+                reason: None,
+            }),
+            Err(e) => DataChannelMessage::WsError(WsError {
                 conn_id,
                 error: e.to_string(),
-            });
-            if let Ok(json) = serde_json::to_vec(&msg) {
-                let _ = dc_tx.send(json).await;
-            }
+            }),
+        };
+        if let Ok(json) = serde_json::to_vec(&msg) {
+            let _ = dc_tx.send(json).await;
         }
     });
 }
