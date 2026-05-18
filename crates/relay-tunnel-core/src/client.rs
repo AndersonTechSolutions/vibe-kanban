@@ -99,6 +99,25 @@ async fn proxy_to_local(
         .headers_mut()
         .insert("x-vk-relayed", http::HeaderValue::from_static("1"));
 
+    // Each call to `proxy_to_local` opens a fresh HTTP/1 client connection to
+    // the local backend and spawns a driver task to keep it alive. Without
+    // `Connection: close`, axum keeps the TCP socket alive for HTTP/1
+    // keepalive and the spawned driver task lives indefinitely — leaking
+    // ~1.7 KB of hyper Connection state + one tokio task per request. Under
+    // multi-popout cloud-UI load this accumulates to ~1 GiB/hr of growth and
+    // ~+100 stuck threads (attributed via jemalloc heap profiling on 2026-05-18).
+    //
+    // WebSocket upgrades carry their own `Connection: Upgrade` header and use
+    // a distinct lifecycle (see SWITCHING_PROTOCOLS branch below), so we only
+    // mark non-upgrade requests for close.
+    let is_upgrade = request.headers().contains_key(http::header::UPGRADE);
+    if !is_upgrade {
+        request.headers_mut().insert(
+            http::header::CONNECTION,
+            http::HeaderValue::from_static("close"),
+        );
+    }
+
     // TODO: fix dev servers
     let local_stream = match TcpStream::connect(local_addr).await {
         Ok(stream) => stream,
