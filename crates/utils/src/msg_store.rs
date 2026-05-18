@@ -14,10 +14,20 @@ use crate::{log_msg::LogMsg, stream_lines::LinesStreamExt};
 const HISTORY_BYTES: usize = 100000 * 1024; // ~100 MB
 
 /// Broadcast channel slot count. Each MsgStore allocates a ring buffer of
-/// this size; multiplied across many concurrent executions × multiple
-/// subscribers, large values translate directly into GBs of resident RAM.
-/// 1024 covers slow-subscriber catchup bursts without holding unbounded state.
-const BROADCAST_CAPACITY: usize = 1024;
+/// this size; multiplied across concurrent executions × multiple subscribers,
+/// large values translate directly into resident RAM, but the per-message
+/// cap below keeps the worst-case bounded.
+///
+/// Sizing rationale: observed bursts during heavy executor turns push 2-3k
+/// messages between subscriber polls. With multiple popout windows each
+/// holding 5-10 WebSocket subscriptions, the SLOWEST subscriber sets the
+/// effective drain rate; one stalled subscriber triggers `Lagged` for that
+/// stream and the frontend sees a state gap.
+///
+/// At BROADCAST_CAPACITY × MAX_LIVE_MSG_BYTES = 16384 × 32 KiB = 512 MiB
+/// max per store, this is comfortable for the leak budget while leaving
+/// ~15x headroom over the observed burst size.
+const BROADCAST_CAPACITY: usize = 16384;
 
 /// Per-message payload size cap applied to the broadcast leg only. Compiler
 /// dumps, JSON blobs, and stdin echoes can be megabytes each; we keep the
