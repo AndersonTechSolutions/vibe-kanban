@@ -17,6 +17,7 @@ import { Route as AppWorkspacesRouteImport } from './routes/_app.workspaces'
 import { Route as AppNotificationsRouteImport } from './routes/_app.notifications'
 import { Route as AppExportRouteImport } from './routes/_app.export'
 import { Route as WorkspacesWorkspaceIdVscodeRouteImport } from './routes/workspaces.$workspaceId.vscode'
+import { Route as WorkspacesWorkspaceIdPopoutRouteImport } from './routes/workspaces.$workspaceId.popout'
 import { Route as AppWorkspacesElectricTestRouteImport } from './routes/_app.workspaces_.electric-test'
 import { Route as AppWorkspacesCreateRouteImport } from './routes/_app.workspaces_.create'
 import { Route as AppWorkspacesWorkspaceIdRouteImport } from './routes/_app.workspaces_.$workspaceId'
@@ -71,6 +72,12 @@ const WorkspacesWorkspaceIdVscodeRoute =
   WorkspacesWorkspaceIdVscodeRouteImport.update({
     id: '/workspaces/$workspaceId/vscode',
     path: '/workspaces/$workspaceId/vscode',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const WorkspacesWorkspaceIdPopoutRoute =
+  WorkspacesWorkspaceIdPopoutRouteImport.update({
+    id: '/workspaces/$workspaceId/popout',
+    path: '/workspaces/$workspaceId/popout',
     getParentRoute: () => rootRouteImport,
   } as any)
 const AppWorkspacesElectricTestRoute =
@@ -177,6 +184,7 @@ export interface FileRoutesByFullPath {
   '/workspaces/$workspaceId': typeof AppWorkspacesWorkspaceIdRoute
   '/workspaces/create': typeof AppWorkspacesCreateRoute
   '/workspaces/electric-test': typeof AppWorkspacesElectricTestRoute
+  '/workspaces/$workspaceId/popout': typeof WorkspacesWorkspaceIdPopoutRoute
   '/workspaces/$workspaceId/vscode': typeof WorkspacesWorkspaceIdVscodeRoute
   '/hosts/$hostId/workspaces': typeof AppHostsHostIdWorkspacesRoute
   '/hosts/$hostId/workspaces/$workspaceId': typeof AppHostsHostIdWorkspacesWorkspaceIdRoute
@@ -201,6 +209,7 @@ export interface FileRoutesByTo {
   '/workspaces/$workspaceId': typeof AppWorkspacesWorkspaceIdRoute
   '/workspaces/create': typeof AppWorkspacesCreateRoute
   '/workspaces/electric-test': typeof AppWorkspacesElectricTestRoute
+  '/workspaces/$workspaceId/popout': typeof WorkspacesWorkspaceIdPopoutRoute
   '/workspaces/$workspaceId/vscode': typeof WorkspacesWorkspaceIdVscodeRoute
   '/hosts/$hostId/workspaces': typeof AppHostsHostIdWorkspacesRoute
   '/hosts/$hostId/workspaces/$workspaceId': typeof AppHostsHostIdWorkspacesWorkspaceIdRoute
@@ -227,6 +236,7 @@ export interface FileRoutesById {
   '/_app/workspaces_/$workspaceId': typeof AppWorkspacesWorkspaceIdRoute
   '/_app/workspaces_/create': typeof AppWorkspacesCreateRoute
   '/_app/workspaces_/electric-test': typeof AppWorkspacesElectricTestRoute
+  '/workspaces/$workspaceId/popout': typeof WorkspacesWorkspaceIdPopoutRoute
   '/workspaces/$workspaceId/vscode': typeof WorkspacesWorkspaceIdVscodeRoute
   '/_app/hosts/$hostId/workspaces': typeof AppHostsHostIdWorkspacesRoute
   '/_app/hosts/$hostId/workspaces_/$workspaceId': typeof AppHostsHostIdWorkspacesWorkspaceIdRoute
@@ -253,6 +263,7 @@ export interface FileRouteTypes {
     | '/workspaces/$workspaceId'
     | '/workspaces/create'
     | '/workspaces/electric-test'
+    | '/workspaces/$workspaceId/popout'
     | '/workspaces/$workspaceId/vscode'
     | '/hosts/$hostId/workspaces'
     | '/hosts/$hostId/workspaces/$workspaceId'
@@ -277,6 +288,7 @@ export interface FileRouteTypes {
     | '/workspaces/$workspaceId'
     | '/workspaces/create'
     | '/workspaces/electric-test'
+    | '/workspaces/$workspaceId/popout'
     | '/workspaces/$workspaceId/vscode'
     | '/hosts/$hostId/workspaces'
     | '/hosts/$hostId/workspaces/$workspaceId'
@@ -302,6 +314,7 @@ export interface FileRouteTypes {
     | '/_app/workspaces_/$workspaceId'
     | '/_app/workspaces_/create'
     | '/_app/workspaces_/electric-test'
+    | '/workspaces/$workspaceId/popout'
     | '/workspaces/$workspaceId/vscode'
     | '/_app/hosts/$hostId/workspaces'
     | '/_app/hosts/$hostId/workspaces_/$workspaceId'
@@ -321,6 +334,7 @@ export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   OnboardingRoute: typeof OnboardingRoute
   OnboardingSignInRoute: typeof OnboardingSignInRoute
+  WorkspacesWorkspaceIdPopoutRoute: typeof WorkspacesWorkspaceIdPopoutRoute
   WorkspacesWorkspaceIdVscodeRoute: typeof WorkspacesWorkspaceIdVscodeRoute
   HostsHostIdWorkspacesWorkspaceIdVscodeRoute: typeof HostsHostIdWorkspacesWorkspaceIdVscodeRoute
 }
@@ -381,6 +395,13 @@ declare module '@tanstack/react-router' {
       path: '/workspaces/$workspaceId/vscode'
       fullPath: '/workspaces/$workspaceId/vscode'
       preLoaderRoute: typeof WorkspacesWorkspaceIdVscodeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/workspaces/$workspaceId/popout': {
+      id: '/workspaces/$workspaceId/popout'
+      path: '/workspaces/$workspaceId/popout'
+      fullPath: '/workspaces/$workspaceId/popout'
+      preLoaderRoute: typeof WorkspacesWorkspaceIdPopoutRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/workspaces_/electric-test': {
@@ -546,6 +567,7 @@ const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   OnboardingRoute: OnboardingRoute,
   OnboardingSignInRoute: OnboardingSignInRoute,
+  WorkspacesWorkspaceIdPopoutRoute: WorkspacesWorkspaceIdPopoutRoute,
   WorkspacesWorkspaceIdVscodeRoute: WorkspacesWorkspaceIdVscodeRoute,
   HostsHostIdWorkspacesWorkspaceIdVscodeRoute:
     HostsHostIdWorkspacesWorkspaceIdVscodeRoute,

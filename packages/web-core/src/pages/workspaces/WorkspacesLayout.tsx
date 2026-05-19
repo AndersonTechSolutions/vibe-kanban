@@ -44,7 +44,18 @@ import { useAppNavigation } from '@/shared/hooks/useAppNavigation';
 
 const WORKSPACES_GUIDE_ID = 'workspaces-guide';
 
-export function WorkspacesLayout() {
+interface WorkspacesLayoutProps {
+  /**
+   * When true, hide chrome that is irrelevant to a window dedicated to a
+   * single workspace (notably the workspace-switcher sidebar). Used by the
+   * `/workspaces/:workspaceId/popout` route.
+   */
+  popout?: boolean;
+}
+
+export function WorkspacesLayout({
+  popout = false,
+}: WorkspacesLayoutProps = {}) {
   const appNavigation = useAppNavigation();
   const {
     workspaceId,
@@ -330,6 +341,11 @@ export function WorkspacesLayout() {
     );
   }
 
+  // In popout mode, suppress the workspace-switcher sidebar regardless of
+  // the user's persisted preference — the popout window is dedicated to
+  // one workspace.
+  const showLeftSidebar = !popout && isLeftSidebarVisible;
+
   const mainContent = (
     <ReviewProvider workspaceId={selectedWorkspace?.id}>
       <ChangesViewProvider>
@@ -418,7 +434,7 @@ export function WorkspacesLayout() {
 
   return (
     <div className="flex flex-1 min-h-0 h-full">
-      {isLeftSidebarVisible && (
+      {showLeftSidebar && (
         <div className="w-[300px] shrink-0 h-full overflow-hidden">
           <WorkspacesSidebarContainer onScrollToBottom={handleScrollToBottom} />
         </div>

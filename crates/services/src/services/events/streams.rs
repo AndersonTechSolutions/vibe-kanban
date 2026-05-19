@@ -21,6 +21,15 @@ impl EventService {
         futures::stream::BoxStream<'static, Result<LogMsg, std::io::Error>>,
         super::types::EventError,
     > {
+        // Subscribe to the broadcast BEFORE reading the snapshot from the DB.
+        // Otherwise a patch pushed between the snapshot query and the
+        // subscription is permanently lost: the snapshot doesn't yet contain
+        // the row, and the subscription hasn't started buffering. JSON Patch
+        // `add` on an existing key is equivalent to `replace`, so any
+        // pre-snapshot-overlap patches that arrive in the buffer are
+        // idempotent against the initial snapshot.
+        let receiver = self.msg_store.get_receiver();
+
         // Get execution processes for this session
         let processes =
             ExecutionProcess::find_by_session_id(&self.db.pool, session_id, show_soft_deleted)
@@ -46,7 +55,7 @@ impl EventService {
 
         // Get filtered event stream
         let filtered_stream =
-            BroadcastStream::new(self.msg_store.get_receiver()).filter_map(move |msg_result| {
+            BroadcastStream::new(receiver).filter_map(move |msg_result| {
                 async move {
                     match msg_result {
                         Ok(LogMsg::JsonPatch(patch)) => {
@@ -153,6 +162,10 @@ impl EventService {
         futures::stream::BoxStream<'static, Result<LogMsg, std::io::Error>>,
         super::types::EventError,
     > {
+        // Subscribe before reading snapshot (see comment in
+        // stream_execution_processes_for_session_raw for rationale).
+        let receiver = self.msg_store.get_receiver();
+
         // Treat errors (e.g., corrupted/malformed data) the same as "scratch not found"
         // This prevents the websocket from closing and retrying indefinitely
         let scratch = match Scratch::find_by_id(&self.db.pool, scratch_id, scratch_type).await {
@@ -179,7 +192,7 @@ impl EventService {
 
         // Filter to only this scratch's events by matching id and payload.type in the patch value
         let filtered_stream =
-            BroadcastStream::new(self.msg_store.get_receiver()).filter_map(move |msg_result| {
+            BroadcastStream::new(receiver).filter_map(move |msg_result| {
                 let id_str = scratch_id.to_string();
                 let type_str = type_str.clone();
                 async move {
@@ -232,6 +245,10 @@ impl EventService {
         futures::stream::BoxStream<'static, Result<LogMsg, std::io::Error>>,
         super::types::EventError,
     > {
+        // Subscribe before reading snapshot (see comment in
+        // stream_execution_processes_for_session_raw for rationale).
+        let receiver = self.msg_store.get_receiver();
+
         let workspaces = Workspace::find_all_with_status(&self.db.pool, archived, limit).await?;
         let workspaces_map: serde_json::Map<String, serde_json::Value> = workspaces
             .into_iter()
@@ -245,7 +262,7 @@ impl EventService {
         }]);
         let initial_msg = LogMsg::JsonPatch(serde_json::from_value(initial_patch).unwrap());
 
-        let filtered_stream = BroadcastStream::new(self.msg_store.get_receiver()).filter_map(
+        let filtered_stream = BroadcastStream::new(receiver).filter_map(
             move |msg_result| async move {
                 match msg_result {
                     Ok(LogMsg::JsonPatch(patch)) => {

@@ -128,6 +128,7 @@ impl LocalContainerService {
         };
 
         container.spawn_workspace_cleanup();
+        container.spawn_msg_stores_janitor();
 
         container
     }
@@ -317,6 +318,97 @@ impl LocalContainerService {
                     });
             }
         });
+    }
+
+    /// Background reconciliation between the in-memory `msg_stores` map and
+    /// the `execution_processes` table. Defense in depth on top of the
+    /// `spawn_exit_monitor` cleanup path — if an executor process hangs
+    /// without exiting (e.g., waiting on stdin from a closed pipe) the
+    /// exit-monitor removal never fires, leaking the MsgStore. This task
+    /// catches those orphans.
+    fn spawn_msg_stores_janitor(&self) {
+        let container = self.clone();
+        tokio::spawn(async move {
+            // Wait one interval before the first sweep so we don't race
+            // against startup-time inserts that haven't been backed by a
+            // DB row yet.
+            let mut ticker =
+                tokio::time::interval(tokio::time::Duration::from_secs(5 * 60));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            ticker.tick().await; // skip the immediate first fire
+            loop {
+                ticker.tick().await;
+                let evicted = container.run_msg_stores_janitor_pass().await;
+                if evicted > 0 {
+                    tracing::debug!(evicted, "msg_stores janitor pass");
+                }
+            }
+        });
+    }
+
+    /// Single janitor pass: walk `msg_stores`, query each `exec_id`'s DB
+    /// row, and remove entries whose execution is in a terminal status and
+    /// has been done for longer than `JANITOR_GRACE`. Returns the number
+    /// removed for observability. Extracted from the loop so callers can
+    /// invoke it directly (e.g. for tests once container fixtures exist).
+    ///
+    /// Race condition note: both this pass and `spawn_exit_monitor` may
+    /// call `msg_stores.write().await.remove(&id)` for the same id. The
+    /// race is benign — one returns `Some`, the other returns `None`.
+    pub(crate) async fn run_msg_stores_janitor_pass(&self) -> usize {
+        const JANITOR_GRACE: chrono::Duration = chrono::Duration::minutes(5);
+        let candidates: Vec<Uuid> = {
+            let map = self.msg_stores.read().await;
+            map.keys().copied().collect()
+        };
+        if candidates.is_empty() {
+            return 0;
+        }
+        let now = chrono::Utc::now();
+        let mut to_evict: Vec<Uuid> = Vec::new();
+        for exec_id in candidates {
+            match db::models::execution_process::ExecutionProcess::find_by_id(
+                &self.db.pool,
+                exec_id,
+            )
+            .await
+            {
+                Ok(Some(ep))
+                    if matches!(
+                        ep.status,
+                        db::models::execution_process::ExecutionProcessStatus::Completed
+                            | db::models::execution_process::ExecutionProcessStatus::Failed
+                            | db::models::execution_process::ExecutionProcessStatus::Killed
+                    ) =>
+                {
+                    if let Some(completed_at) = ep.completed_at
+                        && now.signed_duration_since(completed_at) > JANITOR_GRACE
+                    {
+                        to_evict.push(exec_id);
+                    }
+                }
+                Ok(Some(_)) => { /* still running */ }
+                Ok(None) => {
+                    // DB row gone; treat as orphan and evict.
+                    to_evict.push(exec_id);
+                }
+                Err(e) => {
+                    tracing::warn!(?e, %exec_id, "msg_stores janitor: failed to load row");
+                }
+            }
+        }
+        let mut evicted = 0usize;
+        if !to_evict.is_empty() {
+            let mut map = self.msg_stores.write().await;
+            for exec_id in to_evict {
+                if let Some(store) = map.remove(&exec_id) {
+                    store.push_finished();
+                    tracing::debug!(%exec_id, reason = "janitor", "MsgStore removed");
+                    evicted += 1;
+                }
+            }
+        }
+        evicted
     }
 
     /// Record the current HEAD commit for each repository as the "after" state.
@@ -650,7 +742,11 @@ impl LocalContainerService {
 
                             // Execute the queued follow-up
                             if let Err(e) = container
-                                .start_queued_follow_up(&ctx, &queued_msg.data)
+                                .start_queued_follow_up(
+                                    &ctx.session,
+                                    &ctx.workspace,
+                                    &queued_msg.data,
+                                )
                                 .await
                             {
                                 tracing::error!("Failed to start queued follow-up: {}", e);
@@ -727,7 +823,11 @@ impl LocalContainerService {
                         }
 
                         if let Err(e) = container
-                            .start_queued_follow_up(&ctx, &queued_msg.data)
+                            .start_queued_follow_up(
+                                &ctx.session,
+                                &ctx.workspace,
+                                &queued_msg.data,
+                            )
                             .await
                         {
                             tracing::error!(
@@ -796,6 +896,7 @@ impl LocalContainerService {
             let db_stream_handle = container.take_db_stream_handle(&exec_id).await;
             if let Some(msg_arc) = msg_stores.write().await.remove(&exec_id) {
                 msg_arc.push_finished();
+                tracing::debug!(%exec_id, reason = "exit_monitor", "MsgStore removed");
             }
             if let Some(handle) = db_stream_handle {
                 let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
@@ -1047,17 +1148,18 @@ impl LocalContainerService {
     /// Start a follow-up execution from a queued message
     async fn start_queued_follow_up(
         &self,
-        ctx: &ExecutionContext,
+        session: &Session,
+        workspace: &Workspace,
         queued_data: &DraftFollowUpData,
     ) -> Result<ExecutionProcess, ContainerError> {
         let executor_profile_id = queued_data.executor_config.profile_id();
 
         // Validate executor matches session if session has prior executions
         let expected_executor: Option<String> =
-            ExecutionProcess::latest_executor_profile_for_session(&self.db.pool, ctx.session.id)
+            ExecutionProcess::latest_executor_profile_for_session(&self.db.pool, session.id)
                 .await?
                 .map(|profile| profile.executor.to_string())
-                .or_else(|| ctx.session.executor.clone());
+                .or_else(|| session.executor.clone());
 
         if let Some(expected) = expected_executor {
             let actual = executor_profile_id.executor.to_string();
@@ -1066,10 +1168,10 @@ impl LocalContainerService {
             }
         }
 
-        if ctx.session.executor.is_none() {
+        if session.executor.is_none() {
             Session::update_executor(
                 &self.db.pool,
-                ctx.session.id,
+                session.id,
                 &executor_profile_id.executor.to_string(),
             )
             .await?;
@@ -1077,14 +1179,12 @@ impl LocalContainerService {
 
         // Get latest agent turn for session continuity (from coding agent turns)
         let latest_session_info =
-            CodingAgentTurn::find_latest_session_info(&self.db.pool, ctx.session.id).await?;
+            CodingAgentTurn::find_latest_session_info(&self.db.pool, session.id).await?;
 
-        let repos =
-            WorkspaceRepo::find_repos_for_workspace(&self.db.pool, ctx.workspace.id).await?;
+        let repos = WorkspaceRepo::find_repos_for_workspace(&self.db.pool, workspace.id).await?;
         let cleanup_action = self.cleanup_actions_for_repos(&repos);
 
-        let working_dir = ctx
-            .session
+        let working_dir = session
             .agent_working_dir
             .as_ref()
             .filter(|dir| !dir.is_empty())
@@ -1108,13 +1208,78 @@ impl LocalContainerService {
 
         let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
 
-        self.start_execution(
-            &ctx.workspace,
-            &ctx.session,
-            &action,
-            &ExecutionProcessRunReason::CodingAgent,
+        self.start_execution(workspace, session, &action, &ExecutionProcessRunReason::CodingAgent)
+            .await
+    }
+
+    /// Dispatch any queued follow-up message for `session_id` immediately,
+    /// provided no coding-agent execution is currently running for that
+    /// session. Returns `Ok(Some(ep))` if a new execution was started,
+    /// `Ok(None)` if nothing was dispatched (either no queued message or
+    /// an agent is already running).
+    ///
+    /// Without this, the dispatch path runs ONLY from `spawn_exit_monitor`
+    /// when an EP completes. If the user queues a message after the EP
+    /// has already finished (which happens when the cloud UI shows stale
+    /// state and the user thinks the conversation is still running), the
+    /// completion event has already fired, the queue check at the time
+    /// found it empty, and the message would sit in the in-memory
+    /// DashMap forever until the user manually re-fires it.
+    pub async fn try_dispatch_queued_if_idle(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Option<ExecutionProcess>, ContainerError> {
+        // Skip dispatch if an agent is already running — the existing
+        // `spawn_exit_monitor` path will pick up the queued message when
+        // that agent completes.
+        let has_running = ExecutionProcess::has_running_coding_agent_for_session(
+            &self.db.pool,
+            session_id,
         )
         .await
+        .unwrap_or(true);
+        if has_running {
+            return Ok(None);
+        }
+
+        // Race note: both this method and `spawn_exit_monitor` may call
+        // `take_queued` concurrently. `DashMap::remove` is atomic, so
+        // exactly one of them wins; the other gets `None` and is a no-op.
+        let Some(queued) = self.queued_message_service.take_queued(session_id) else {
+            return Ok(None);
+        };
+
+        let session = Session::find_by_id(&self.db.pool, session_id)
+            .await?
+            .ok_or_else(|| {
+                ContainerError::Other(anyhow!(
+                    "Session {session_id} not found while dispatching queued message"
+                ))
+            })?;
+        let workspace = Workspace::find_by_id(&self.db.pool, session.workspace_id)
+            .await?
+            .ok_or_else(|| {
+                ContainerError::Other(anyhow!(
+                    "Workspace {} not found while dispatching queued message",
+                    session.workspace_id
+                ))
+            })?;
+
+        if let Err(e) =
+            Scratch::delete(&self.db.pool, session_id, &ScratchType::DraftFollowUp).await
+        {
+            tracing::warn!(?e, %session_id, "failed to delete scratch after consuming queued message");
+        }
+
+        let ep = self
+            .start_queued_follow_up(&session, &workspace, &queued.data)
+            .await?;
+        tracing::info!(
+            %session_id,
+            ep_id = %ep.id,
+            "Dispatched queued follow-up from idle-session path"
+        );
+        Ok(Some(ep))
     }
 }
 
@@ -1460,6 +1625,7 @@ impl ContainerService for LocalContainerService {
         let db_stream_handle = self.take_db_stream_handle(&execution_process.id).await;
         if let Some(msg) = self.msg_stores.write().await.remove(&execution_process.id) {
             msg.push_finished();
+            tracing::debug!(exec_id = %execution_process.id, reason = "explicit_stop", "MsgStore removed");
         }
         if let Some(handle) = db_stream_handle {
             let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;

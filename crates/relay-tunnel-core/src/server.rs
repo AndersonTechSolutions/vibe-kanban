@@ -74,6 +74,21 @@ pub async fn proxy_request_over_control(
     };
 
     let mut outbound = axum::http::Request::from_parts(parts, body);
+
+    // Each cloud→host proxy call spawns a fire-and-forget hyper connection
+    // task. Without `Connection: close`, hyper keeps the spawned driver alive
+    // for HTTP/1 keepalive even though each yamux stream is dedicated to one
+    // request. Mark non-upgrade requests for close so the connection task
+    // exits as soon as the response body is delivered (mirrors the
+    // host-side fix in client.rs).
+    let is_upgrade = outbound.headers().contains_key(axum::http::header::UPGRADE);
+    if !is_upgrade {
+        outbound.headers_mut().insert(
+            axum::http::header::CONNECTION,
+            axum::http::HeaderValue::from_static("close"),
+        );
+    }
+
     let request_upgrade = upgrade::on(&mut outbound);
 
     let (mut sender, connection) = match client_http1::Builder::new()

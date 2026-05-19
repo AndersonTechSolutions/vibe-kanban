@@ -30,7 +30,7 @@ async fn queue_message(
         executor_config: payload.executor_config,
     };
 
-    let queued = deployment
+    deployment
         .queued_message_service()
         .queue_message(session.id, data);
 
@@ -44,9 +44,24 @@ async fn queue_message(
         )
         .await;
 
-    Ok(ResponseJson(ApiResponse::success(QueueStatus::Queued {
-        message: queued,
-    })))
+    // If no coding-agent execution is currently running for this session,
+    // dispatch the queued message immediately. Without this, a message
+    // queued after the upstream execution has already completed (which
+    // happens when the cloud UI shows stale running state and the user
+    // queues thinking it's still running) sits in the in-memory queue
+    // forever because the EP-completion event has already fired.
+    if let Err(e) = deployment.try_dispatch_queued_if_idle(session.id).await {
+        tracing::warn!(
+            ?e,
+            session_id = %session.id,
+            "Failed to immediately dispatch queued message (will retry on next exec completion)"
+        );
+    }
+
+    // Re-read status: if try_dispatch consumed the message, return Empty;
+    // otherwise return the Queued payload the client expects.
+    let status = deployment.queued_message_service().get_status(session.id);
+    Ok(ResponseJson(ApiResponse::success(status)))
 }
 
 /// Cancel a queued follow-up message

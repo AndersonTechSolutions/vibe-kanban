@@ -1,7 +1,7 @@
 use std::{str::FromStr, sync::Arc};
 
 use sqlx::{
-    ConnectOptions, Error, Pool, Sqlite, SqlitePool,
+    ConnectOptions, Error, Pool, Sqlite,
     migrate::MigrateError,
     sqlite::{SqliteConnectOptions, SqliteConnection, SqliteJournalMode, SqlitePoolOptions},
 };
@@ -78,10 +78,20 @@ impl DBService {
             "sqlite://{}",
             asset_dir().join("db.v2.sqlite").to_string_lossy()
         );
+        // WAL journal mode lets readers run concurrently with a single
+        // writer, which is the critical path under WebSocket reconnect
+        // storms (many subscribers re-establishing while occasional writes
+        // happen). `synchronous = NORMAL` is the WAL-recommended setting.
+        // `max_connections(64)` matches the migration pool and gives
+        // headroom for the multi-popout, multi-subscription topology.
         let options = SqliteConnectOptions::from_str(&database_url)?
             .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Delete);
-        let pool = SqlitePool::connect_with(options).await?;
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(64)
+            .connect_with(options)
+            .await?;
         run_migrations(&pool).await?;
         Ok(DBService { pool })
     }
@@ -129,12 +139,15 @@ impl DBService {
             "sqlite://{}",
             asset_dir().join("db.v2.sqlite").to_string_lossy()
         );
+        // See `DBService::new` for the rationale on WAL + max_connections.
         let options = SqliteConnectOptions::from_str(&database_url)?
             .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Delete);
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
         let pool = if let Some(hook) = after_connect {
             SqlitePoolOptions::new()
+                .max_connections(64)
                 .after_connect(move |conn, _meta| {
                     let hook = hook.clone();
                     Box::pin(async move {
@@ -145,7 +158,10 @@ impl DBService {
                 .connect_with(options)
                 .await?
         } else {
-            SqlitePool::connect_with(options).await?
+            SqlitePoolOptions::new()
+                .max_connections(64)
+                .connect_with(options)
+                .await?
         };
 
         run_migrations(&pool).await?;

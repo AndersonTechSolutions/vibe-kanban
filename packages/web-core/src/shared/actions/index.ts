@@ -44,6 +44,7 @@ import {
   LinkIcon,
   ArrowBendUpRightIcon,
   ProhibitIcon,
+  ArrowSquareOutIcon,
 } from '@phosphor-icons/react';
 import { useDiffViewStore } from '@/shared/stores/useDiffViewStore';
 import { useWorkspaceDiffStore } from '@/shared/stores/useWorkspaceDiffStore';
@@ -764,6 +765,51 @@ export const Actions = {
         EditorSelectionDialog.show({
           selectedAttemptId: ctx.currentWorkspaceId,
         });
+      }
+    },
+  },
+
+  OpenWorkspaceInNewWindow: {
+    id: 'open-workspace-in-new-window',
+    label: 'Open in new window',
+    icon: ArrowSquareOutIcon,
+    requiresTarget: ActionTargetType.NONE,
+    isVisible: (ctx) =>
+      ctx.hasWorkspace &&
+      // Suppress inside the popout window itself — popping a popout is a no-op.
+      (typeof window === 'undefined' ||
+        !window.location.pathname.endsWith('/popout')),
+    getTooltip: () => 'Open this workspace in its own window',
+    execute: async (ctx) => {
+      if (!ctx.currentWorkspaceId) return;
+      // The popout route lives at a different path in each bundle. Local-web
+      // is single-host so the URL doesn't carry a host id; remote-web is
+      // multi-host and embeds the host id in the path.
+      //
+      // In remote-web, `ctx.currentHostId` is not populated (HostIdProvider
+      // is local-web only), so derive hostId from the current URL prefix
+      // — the user always reaches a per-workspace ContextBar via a route
+      // that already encodes hostId (e.g. /hosts/<id>/workspaces_/<wsId>).
+      const hostIdFromUrl =
+        typeof window !== 'undefined'
+          ? (window.location.pathname.match(/^\/hosts\/([^/]+)\//)?.[1] ?? null)
+          : null;
+      const hostId = ctx.currentHostId ?? hostIdFromUrl;
+      const url =
+        ctx.appRuntime === 'remote' && hostId
+          ? `/hosts/${hostId}/workspaces/${ctx.currentWorkspaceId}/popout`
+          : `/workspaces/${ctx.currentWorkspaceId}/popout`;
+      // Named target keeps single-instance focus per workspace: a second
+      // click on the same workspace's pop-out reuses the existing window.
+      const win = window.open(
+        url,
+        `vk-workspace-${ctx.currentWorkspaceId}`,
+        'popup=yes'
+      );
+      if (win) {
+        // Some browsers (notably standalone-mode PWAs on certain platforms)
+        // do not auto-raise an existing named-target window — focus explicitly.
+        win.focus();
       }
     },
   },
@@ -1580,7 +1626,11 @@ export const NavbarActionGroups = {
 
 // ContextBar action groups define which actions appear in each section
 export const ContextBarActionGroups = {
-  primary: [Actions.OpenInIDE, Actions.CopyWorkspacePath] as ActionDefinition[],
+  primary: [
+    Actions.OpenInIDE,
+    Actions.OpenWorkspaceInNewWindow,
+    Actions.CopyWorkspacePath,
+  ] as ActionDefinition[],
   secondary: [
     Actions.ToggleDevServer,
     Actions.TogglePreviewMode,

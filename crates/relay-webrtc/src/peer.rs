@@ -20,8 +20,8 @@ use ws_bridge::{bridge_tungstenite_ws, connect_upstream_ws};
 use crate::{
     WebRtcError, fragment,
     proxy::{
-        DataChannelMessage, DataChannelRequest, DataChannelResponse, DataChannelWsStream, WsError,
-        WsFrame, WsOpen, WsOpened,
+        DataChannelMessage, DataChannelRequest, DataChannelResponse, DataChannelWsStream, WsClose,
+        WsError, WsFrame, WsOpen, WsOpened,
     },
 };
 
@@ -46,6 +46,15 @@ pub struct PeerConfig {
 /// Creates a new RTCPeerConnection with a STUN server, accepts the offer,
 /// waits for ICE gathering to complete, and returns the answer with
 /// candidates embedded in the SDP.
+///
+/// On any error after the peer connection is created, this function calls
+/// `peer_connection.close().await` before returning the error. webrtc-rs's
+/// `Drop` impl is synchronous and can't await the internal tear-down: the
+/// ICE agent, DTLS transport, SCTP, and SRTP/SRTCP processors all spawn
+/// background tokio tasks at peer creation, and without an explicit close
+/// they outlive the dropped peer and leak `notify-rs` + tokio threads
+/// over time (observed: ~36 MB/hr cgroup growth on MintBox correlated
+/// with ~3-5 failed peer attempts/min in journal warnings).
 pub async fn accept_offer(
     offer_sdp: &str,
 ) -> Result<(String, Arc<RTCPeerConnection>), WebRtcError> {
@@ -61,6 +70,24 @@ pub async fn accept_offer(
 
     let peer_connection = Arc::new(api.new_peer_connection(config).await?);
 
+    match accept_offer_inner(&peer_connection, offer_sdp).await {
+        Ok(answer_sdp) => Ok((answer_sdp, peer_connection)),
+        Err(e) => {
+            if let Err(close_err) = peer_connection.close().await {
+                tracing::warn!(
+                    ?close_err,
+                    "failed to close peer_connection after accept_offer error"
+                );
+            }
+            Err(e)
+        }
+    }
+}
+
+async fn accept_offer_inner(
+    peer_connection: &Arc<RTCPeerConnection>,
+    offer_sdp: &str,
+) -> Result<String, WebRtcError> {
     // Wait for ICE gathering to complete before returning the answer so
     // that candidates are embedded in the SDP.
     let (gather_done_tx, gather_done_rx) = tokio::sync::oneshot::channel::<()>();
@@ -94,7 +121,7 @@ pub async fn accept_offer(
         .ok_or(WebRtcError::NoLocalDescription)?
         .sdp;
 
-    Ok((answer_sdp, peer_connection))
+    Ok(answer_sdp)
 }
 
 /// Run the server-side peer.
@@ -412,14 +439,25 @@ async fn handle_ws_open(
         // Always clear the per-connection sender when the bridge task exits.
         ws_connections.lock().await.remove(&conn_id);
 
-        if let Err(e) = bridge_result {
-            let msg = DataChannelMessage::WsError(WsError {
+        // Always notify the client that the bridge has ended — either via
+        // WsClose (normal close) or WsError (failure). Without this, a
+        // clean upstream close leaves the emulated WebSocket on the
+        // browser side in an "open but silent" state: no `onclose` fires,
+        // `useJsonPatchWsStream` keeps `isConnected=true`, and the user
+        // never sees new live updates until a full page refresh.
+        let msg = match bridge_result {
+            Ok(()) => DataChannelMessage::WsClose(WsClose {
+                conn_id,
+                code: Some(1000),
+                reason: None,
+            }),
+            Err(e) => DataChannelMessage::WsError(WsError {
                 conn_id,
                 error: e.to_string(),
-            });
-            if let Ok(json) = serde_json::to_vec(&msg) {
-                let _ = dc_tx.send(json).await;
-            }
+            }),
+        };
+        if let Ok(json) = serde_json::to_vec(&msg) {
+            let _ = dc_tx.send(json).await;
         }
     });
 }

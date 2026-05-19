@@ -207,6 +207,10 @@ impl Deployment for LocalDeployment {
         let trusted_key_auth = TrustedKeyAuthRuntime::new(trusted_keys_path());
         let relay_signing = RelaySigningService::load_or_generate(&server_signing_key_path())
             .expect("Failed to load or generate server signing key");
+        // Bound the in-memory signing-session map with a periodic sweep so
+        // idle hosts evict expired sessions and per-session nonce caches
+        // instead of relying solely on incoming verify_request calls.
+        let _eviction_handle = relay_signing.spawn_eviction_loop();
         let relay_control = Arc::new(RelayControl::new());
         let client_info = ClientInfo::new();
         let preview_proxy = PreviewProxyService::new();
@@ -384,6 +388,22 @@ impl Deployment for LocalDeployment {
 }
 
 impl LocalDeployment {
+    /// Try to immediately dispatch any queued follow-up message for a
+    /// session, provided no coding-agent execution is currently running
+    /// for it. Used by the `/queue` POST handler so that messages
+    /// queued after the upstream execution has already completed don't
+    /// sit in the in-memory queue forever waiting for an exit event
+    /// that will never fire.
+    pub async fn try_dispatch_queued_if_idle(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Option<db::models::execution_process::ExecutionProcess>, DeploymentError> {
+        self.container
+            .try_dispatch_queued_if_idle(session_id)
+            .await
+            .map_err(DeploymentError::from)
+    }
+
     pub fn webrtc_host(&self) -> Option<Arc<WebRtcHost>> {
         let local_addr = self.client_info.get_server_addr()?;
 

@@ -1215,6 +1215,7 @@ pub trait ContainerService {
             &repo_states,
         )
         .await?;
+        tracing::debug!(exec_id = %execution_process.id, "MsgStore created");
         self.msg_stores()
             .write()
             .await
@@ -1226,6 +1227,7 @@ pub trait ContainerService {
                 .write()
                 .await
                 .remove(&execution_process.id);
+            tracing::debug!(exec_id = %execution_process.id, reason = "archive_rollback", "MsgStore removed");
             return Err(e.into());
         }
 

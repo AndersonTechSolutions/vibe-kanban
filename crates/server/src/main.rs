@@ -17,6 +17,14 @@ use utils::{
     sentry::{self as sentry_utils, SentrySource, sentry_layer},
 };
 
+// Profiling allocator. Opt-in via the `mem-prof` cargo feature so default
+// production builds keep the system allocator. When enabled, set
+// `MALLOC_CONF=prof:true,prof_active:true,lg_prof_sample:19,prof_prefix:/tmp/jeprof.out`
+// in the service environment to dump heap profiles for `jeprof` diffing.
+#[cfg(feature = "mem-prof")]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[derive(Debug, Error)]
 pub enum VibeKanbanError {
     #[error(transparent)]
