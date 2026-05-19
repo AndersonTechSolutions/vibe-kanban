@@ -388,6 +388,22 @@ impl Deployment for LocalDeployment {
 }
 
 impl LocalDeployment {
+    /// Try to immediately dispatch any queued follow-up message for a
+    /// session, provided no coding-agent execution is currently running
+    /// for it. Used by the `/queue` POST handler so that messages
+    /// queued after the upstream execution has already completed don't
+    /// sit in the in-memory queue forever waiting for an exit event
+    /// that will never fire.
+    pub async fn try_dispatch_queued_if_idle(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Option<db::models::execution_process::ExecutionProcess>, DeploymentError> {
+        self.container
+            .try_dispatch_queued_if_idle(session_id)
+            .await
+            .map_err(DeploymentError::from)
+    }
+
     pub fn webrtc_host(&self) -> Option<Arc<WebRtcHost>> {
         let local_addr = self.client_info.get_server_addr()?;
 

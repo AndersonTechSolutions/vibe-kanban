@@ -742,7 +742,11 @@ impl LocalContainerService {
 
                             // Execute the queued follow-up
                             if let Err(e) = container
-                                .start_queued_follow_up(&ctx, &queued_msg.data)
+                                .start_queued_follow_up(
+                                    &ctx.session,
+                                    &ctx.workspace,
+                                    &queued_msg.data,
+                                )
                                 .await
                             {
                                 tracing::error!("Failed to start queued follow-up: {}", e);
@@ -819,7 +823,11 @@ impl LocalContainerService {
                         }
 
                         if let Err(e) = container
-                            .start_queued_follow_up(&ctx, &queued_msg.data)
+                            .start_queued_follow_up(
+                                &ctx.session,
+                                &ctx.workspace,
+                                &queued_msg.data,
+                            )
                             .await
                         {
                             tracing::error!(
@@ -1140,17 +1148,18 @@ impl LocalContainerService {
     /// Start a follow-up execution from a queued message
     async fn start_queued_follow_up(
         &self,
-        ctx: &ExecutionContext,
+        session: &Session,
+        workspace: &Workspace,
         queued_data: &DraftFollowUpData,
     ) -> Result<ExecutionProcess, ContainerError> {
         let executor_profile_id = queued_data.executor_config.profile_id();
 
         // Validate executor matches session if session has prior executions
         let expected_executor: Option<String> =
-            ExecutionProcess::latest_executor_profile_for_session(&self.db.pool, ctx.session.id)
+            ExecutionProcess::latest_executor_profile_for_session(&self.db.pool, session.id)
                 .await?
                 .map(|profile| profile.executor.to_string())
-                .or_else(|| ctx.session.executor.clone());
+                .or_else(|| session.executor.clone());
 
         if let Some(expected) = expected_executor {
             let actual = executor_profile_id.executor.to_string();
@@ -1159,10 +1168,10 @@ impl LocalContainerService {
             }
         }
 
-        if ctx.session.executor.is_none() {
+        if session.executor.is_none() {
             Session::update_executor(
                 &self.db.pool,
-                ctx.session.id,
+                session.id,
                 &executor_profile_id.executor.to_string(),
             )
             .await?;
@@ -1170,14 +1179,12 @@ impl LocalContainerService {
 
         // Get latest agent turn for session continuity (from coding agent turns)
         let latest_session_info =
-            CodingAgentTurn::find_latest_session_info(&self.db.pool, ctx.session.id).await?;
+            CodingAgentTurn::find_latest_session_info(&self.db.pool, session.id).await?;
 
-        let repos =
-            WorkspaceRepo::find_repos_for_workspace(&self.db.pool, ctx.workspace.id).await?;
+        let repos = WorkspaceRepo::find_repos_for_workspace(&self.db.pool, workspace.id).await?;
         let cleanup_action = self.cleanup_actions_for_repos(&repos);
 
-        let working_dir = ctx
-            .session
+        let working_dir = session
             .agent_working_dir
             .as_ref()
             .filter(|dir| !dir.is_empty())
@@ -1201,13 +1208,78 @@ impl LocalContainerService {
 
         let action = ExecutorAction::new(action_type, cleanup_action.map(Box::new));
 
-        self.start_execution(
-            &ctx.workspace,
-            &ctx.session,
-            &action,
-            &ExecutionProcessRunReason::CodingAgent,
+        self.start_execution(workspace, session, &action, &ExecutionProcessRunReason::CodingAgent)
+            .await
+    }
+
+    /// Dispatch any queued follow-up message for `session_id` immediately,
+    /// provided no coding-agent execution is currently running for that
+    /// session. Returns `Ok(Some(ep))` if a new execution was started,
+    /// `Ok(None)` if nothing was dispatched (either no queued message or
+    /// an agent is already running).
+    ///
+    /// Without this, the dispatch path runs ONLY from `spawn_exit_monitor`
+    /// when an EP completes. If the user queues a message after the EP
+    /// has already finished (which happens when the cloud UI shows stale
+    /// state and the user thinks the conversation is still running), the
+    /// completion event has already fired, the queue check at the time
+    /// found it empty, and the message would sit in the in-memory
+    /// DashMap forever until the user manually re-fires it.
+    pub async fn try_dispatch_queued_if_idle(
+        &self,
+        session_id: Uuid,
+    ) -> Result<Option<ExecutionProcess>, ContainerError> {
+        // Skip dispatch if an agent is already running — the existing
+        // `spawn_exit_monitor` path will pick up the queued message when
+        // that agent completes.
+        let has_running = ExecutionProcess::has_running_coding_agent_for_session(
+            &self.db.pool,
+            session_id,
         )
         .await
+        .unwrap_or(true);
+        if has_running {
+            return Ok(None);
+        }
+
+        // Race note: both this method and `spawn_exit_monitor` may call
+        // `take_queued` concurrently. `DashMap::remove` is atomic, so
+        // exactly one of them wins; the other gets `None` and is a no-op.
+        let Some(queued) = self.queued_message_service.take_queued(session_id) else {
+            return Ok(None);
+        };
+
+        let session = Session::find_by_id(&self.db.pool, session_id)
+            .await?
+            .ok_or_else(|| {
+                ContainerError::Other(anyhow!(
+                    "Session {session_id} not found while dispatching queued message"
+                ))
+            })?;
+        let workspace = Workspace::find_by_id(&self.db.pool, session.workspace_id)
+            .await?
+            .ok_or_else(|| {
+                ContainerError::Other(anyhow!(
+                    "Workspace {} not found while dispatching queued message",
+                    session.workspace_id
+                ))
+            })?;
+
+        if let Err(e) =
+            Scratch::delete(&self.db.pool, session_id, &ScratchType::DraftFollowUp).await
+        {
+            tracing::warn!(?e, %session_id, "failed to delete scratch after consuming queued message");
+        }
+
+        let ep = self
+            .start_queued_follow_up(&session, &workspace, &queued.data)
+            .await?;
+        tracing::info!(
+            %session_id,
+            ep_id = %ep.id,
+            "Dispatched queued follow-up from idle-session path"
+        );
+        Ok(Some(ep))
     }
 }
 
