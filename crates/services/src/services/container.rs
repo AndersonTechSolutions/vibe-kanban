@@ -1208,18 +1208,42 @@ pub trait ContainerService {
             run_reason: run_reason.clone(),
         };
 
-        let execution_process = ExecutionProcess::create(
-            &self.db().pool,
-            &create_execution_process,
-            Uuid::new_v4(),
-            &repo_states,
-        )
-        .await?;
-        tracing::debug!(exec_id = %execution_process.id, "MsgStore created");
+        // Insert the per-EP MsgStore BEFORE the DB INSERT. The INSERT triggers
+        // the SQLite preupdate hook which broadcasts an `add /execution_processes/<id>`
+        // patch to every session-WS subscriber. If the browser receives that
+        // patch and opens `/api/execution-processes/<id>/normalized-logs/ws`
+        // before the msg_store entry exists, `stream_normalized_logs` finds
+        // neither an in-memory store nor any DB rows (the EP is brand-new),
+        // returns `None`, and the WS handler sends `LogMsg::Finished` and
+        // closes. The frontend's `useJsonPatchWsStream` then marks the stream
+        // finished and never reconnects, leaving the conversation panel
+        // permanently frozen for that turn until a manual page refresh.
+        //
+        // Pre-allocating the UUID + msg_store closes the race: by the time
+        // the broadcast fires, the lookup succeeds. If the DB insert later
+        // errors, we roll the msg_store back below.
+        let exec_id = Uuid::new_v4();
         self.msg_stores()
             .write()
             .await
-            .insert(execution_process.id, Arc::new(MsgStore::new()));
+            .insert(exec_id, Arc::new(MsgStore::new()));
+
+        let execution_process = match ExecutionProcess::create(
+            &self.db().pool,
+            &create_execution_process,
+            exec_id,
+            &repo_states,
+        )
+        .await
+        {
+            Ok(ep) => ep,
+            Err(e) => {
+                self.msg_stores().write().await.remove(&exec_id);
+                tracing::debug!(%exec_id, reason = "create_failed", "MsgStore removed");
+                return Err(e.into());
+            }
+        };
+        tracing::debug!(exec_id = %execution_process.id, "MsgStore created");
         if *run_reason != ExecutionProcessRunReason::ArchiveScript
             && let Err(e) = Workspace::set_archived(&self.db().pool, workspace.id, false).await
         {
